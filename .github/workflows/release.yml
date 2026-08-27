@@ -69,7 +69,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
-          path: dist/*.tar.gz dist/*.zip
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           retention-days: 1
   release:
     needs: build
