@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+name="ysunethelper"
+description="YSU campus network keeper (CAS -> ePortal auto-auth)"
+
+command="/usr/local/bin/ysunethelper"
+command_args="-config ${NETHELPER_CONFIG:-/etc/ysunethelper/config.json} daemon"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+depend() {
+	need net
+	after firewall
+}
