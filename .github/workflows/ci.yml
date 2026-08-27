@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - run: go vet ./...
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ysunethelper ./cmd/ysunethelper
+
+      - name: Smoke test
+        run: ./ysunethelper 2>&1 | grep -q "^usage:"

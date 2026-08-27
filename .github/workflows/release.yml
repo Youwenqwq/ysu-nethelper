@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+            suffix: v7
+          - goos: linux
+            goarch: mipsle
+            gomips: softfloat
+            suffix: softfloat
+          - goos: linux
+            goarch: mips
+            gomips: softfloat
+            suffix: softfloat
+          - goos: linux
+            goarch: riscv64
+          - goos: windows
+            goarch: amd64
+            exe: .exe
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          SUFFIX: ${{ matrix.suffix }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          name=ysunethelper_${VERSION#v}_${GOOS}_${GOARCH}${SUFFIX}
+          mkdir -p dist/$name
+          CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o dist/$name/ysunethelper${EXE} ./cmd/ysunethelper
+          cp README.md dist/$name/
+          if [ "$GOOS" = linux ]; then cp deploy/ysunethelper.service deploy/ysunethelper.initd dist/$name/; fi
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr $name.zip $name)
+          else
+            tar -C dist -czf dist/$name.tar.gz $name
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          path: dist/*.tar.gz dist/*.zip
+          retention-days: 1
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*"
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz *.zip > sha256sums.txt
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            *.tar.gz *.zip sha256sums.txt
