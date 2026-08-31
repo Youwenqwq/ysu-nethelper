@@ -17,6 +17,29 @@ CGO_ENABLED=0 go build -ldflags='-s -w' -o ysunethelper ./cmd/ysunethelper
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64  go build -ldflags='-s -w' -o ysunethelper-arm64  ./cmd/ysunethelper
 ```
 
+`CI` workflow 在推送 `main`/`master` 分支、提交 Pull Request 或手动运行时，会使用
+Mihomo 同款的 `MetaCubeX/go` backport 工具链构建 Linux、Darwin、Windows、
+FreeBSD、Android 等 90 个平台/架构变体。每个变体会上传一个 Actions Artifact，
+其中包含裸二进制及对应的 `.gz`/`.zip`（Linux 发行版还包含 `.deb`、`.rpm` 或
+`.pkg.tar.zst`）；另有 `ysunethelper-all-architectures` Artifact，内含全部裸
+二进制的总 `tar.gz` 压缩包。
+
+推送 `v*` 标签还会触发 `release.yml`，使用同一套 90 架构构建，将所有架构
+二进制、压缩包、发行版包和校验文件发布到 GitHub Release，并附加全架构二进制
+压缩包及总校验文件。
+
+## 系统代理
+
+认证请求和 Internet 探针会自动遵循系统代理环境变量：`HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`（小写形式同样支持）。例如：
+
+```sh
+export HTTPS_PROXY=http://127.0.0.1:7890
+export HTTP_PROXY=http://127.0.0.1:7890
+ysunethelper status
+```
+
+如需让某些地址直连，可设置 `NO_PROXY`，例如 `NO_PROXY=localhost,127.0.0.1`。
+
 ## 配置
 
 配置文件解析顺序：`-config` 显式指定 → `./ysunethelper.json` → `~/.config/ysunethelper/config.json` → `/etc/ysunethelper/config.json`
@@ -65,11 +88,20 @@ http://connectivitycheck.gstatic.com/generate_204
 
 ```sh
 ysunethelper [-config path] status
-ysunethelper [-config path] login
+ysunethelper [-config path] login [-u username] [-p password] [-s service]
 ysunethelper [-config path] logout
 ysunethelper [-config path] daemon
 ysunethelper -v ...
 ```
+
+临时指定账号密码登录（不会写入配置文件）：
+
+```sh
+ysunethelper login -u 1145141919810 -p mypassword
+```
+
+也可通过 `-s` 指定网络服务，例如 `-s mobile`。命令行密码可能被本机其他
+用户通过进程列表看到；长期使用建议写入权限为 0600 的配置文件。
 
 ## Daemon 行为
 

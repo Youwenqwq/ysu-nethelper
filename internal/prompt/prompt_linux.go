@@ -4,6 +4,7 @@ package prompt
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"strings"
 	"syscall"
@@ -19,7 +20,7 @@ func isTerminal(f *os.File) bool {
 }
 
 // readPassword 关闭回显读入一行密码，随后恢复原始终端属性。
-func readPassword(f *os.File, r *bufio.Reader) (string, error) {
+func readPassword(ctx context.Context, f *os.File, r *bufio.Reader) (string, error) {
 	var oldState syscall.Termios
 	if _, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
 		syscall.TCGETS, uintptr(unsafe.Pointer(&oldState)), 0, 0, 0); errno != 0 {
@@ -36,7 +37,7 @@ func readPassword(f *os.File, r *bufio.Reader) (string, error) {
 	defer syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
 		syscall.TCSETS, uintptr(unsafe.Pointer(&oldState)), 0, 0, 0)
 
-	line, err := r.ReadString('\n')
+	line, err := readLine(ctx, r)
 	if err != nil {
 		return "", err
 	}

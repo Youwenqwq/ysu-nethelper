@@ -4,6 +4,7 @@ package prompt
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -16,9 +17,9 @@ func isTerminal(f *os.File) bool {
 }
 
 // readPassword 非 Linux 平台降级为明文读入并告警。
-func readPassword(f *os.File, r *bufio.Reader) (string, error) {
+func readPassword(ctx context.Context, f *os.File, r *bufio.Reader) (string, error) {
 	fmt.Fprint(os.Stderr, "(warning: 该平台不支持关闭回显，密码将明文显示) ")
-	line, err := r.ReadString('\n')
+	line, err := readLine(ctx, r)
 	if err != nil {
 		return "", err
 	}

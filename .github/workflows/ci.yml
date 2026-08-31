@@ -2,11 +2,28 @@ name: CI
 
 on:
   push:
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - ".github/ISSUE_TEMPLATE/**"
     branches: [main, master]
   pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（例如 v1.0.0）"
+        required: true
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -16,10 +33,309 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - run: go vet ./...
+      - name: Vet
+        run: go vet ./...
 
-      - name: Build
+      - name: Build validation binary
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ysunethelper ./cmd/ysunethelper
 
       - name: Smoke test
         run: ./ysunethelper 2>&1 | grep -q "^usage:"
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - { goos: linux, goarch: '386', go386: sse2, output: '386', debian: i386, rpm: i386 }
+          - { goos: linux, goarch: '386', go386: softfloat, output: '386-softfloat' }
+          - { goos: linux, goarch: amd64, goamd64: v1, output: amd64-compatible }
+          - { goos: linux, goarch: amd64, goamd64: v3, output: amd64, debian: amd64, rpm: x86_64, pacman: x86_64 }
+          - { goos: linux, goarch: amd64, goamd64: v1, output: amd64-v1, debian: amd64, rpm: x86_64, pacman: x86_64 }
+          - { goos: linux, goarch: amd64, goamd64: v2, output: amd64-v2, debian: amd64, rpm: x86_64, pacman: x86_64 }
+          - { goos: linux, goarch: amd64, goamd64: v3, output: amd64-v3, debian: amd64, rpm: x86_64, pacman: x86_64 }
+          - { goos: linux, goarch: arm, goarm: '5', output: armv5 }
+          - { goos: linux, goarch: arm, goarm: '6', output: armv6, debian: armel, rpm: armv6hl }
+          - { goos: linux, goarch: arm, goarm: '7', output: armv7, debian: armhf, rpm: armv7hl, pacman: armv7hl }
+          - { goos: linux, goarch: arm64, output: arm64, debian: arm64, rpm: aarch64, pacman: aarch64 }
+          - { goos: linux, goarch: mips, gomips: hardfloat, output: mips-hardfloat }
+          - { goos: linux, goarch: mips, gomips: softfloat, output: mips-softfloat }
+          - { goos: linux, goarch: mipsle, gomips: hardfloat, output: mipsle-hardfloat }
+          - { goos: linux, goarch: mipsle, gomips: softfloat, output: mipsle-softfloat }
+          - { goos: linux, goarch: mips64, output: mips64 }
+          - { goos: linux, goarch: mips64le, output: mips64le, debian: mips64el, rpm: mips64el }
+          - { goos: linux, goarch: loong64, output: loong64-abi1, abi: '1', debian: loongarch64, rpm: loongarch64, goversion: custom }
+          - { goos: linux, goarch: loong64, output: loong64-abi2, abi: '2', debian: loong64, rpm: loong64 }
+          - { goos: linux, goarch: riscv64, output: riscv64, debian: riscv64, rpm: riscv64 }
+          - { goos: linux, goarch: s390x, output: s390x, debian: s390x, rpm: s390x }
+          - { goos: linux, goarch: ppc64le, output: ppc64le, debian: ppc64el, rpm: ppc64le }
+
+          # Darwin
+          - { goos: darwin, goarch: amd64, goamd64: v1, output: amd64-compatible }
+          - { goos: darwin, goarch: amd64, goamd64: v3, output: amd64 }
+          - { goos: darwin, goarch: amd64, goamd64: v1, output: amd64-v1 }
+          - { goos: darwin, goarch: amd64, goamd64: v2, output: amd64-v2 }
+          - { goos: darwin, goarch: amd64, goamd64: v3, output: amd64-v3 }
+          - { goos: darwin, goarch: arm64, output: arm64 }
+
+          # Windows
+          - { goos: windows, goarch: '386', output: '386' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-compatible }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64 }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1 }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2 }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3 }
+          - { goos: windows, goarch: arm64, output: arm64 }
+
+          # FreeBSD
+          - { goos: freebsd, goarch: '386', output: '386' }
+          - { goos: freebsd, goarch: amd64, goamd64: v1, output: amd64-compatible }
+          - { goos: freebsd, goarch: amd64, goamd64: v3, output: amd64 }
+          - { goos: freebsd, goarch: amd64, goamd64: v1, output: amd64-v1 }
+          - { goos: freebsd, goarch: amd64, goamd64: v2, output: amd64-v2 }
+          - { goos: freebsd, goarch: amd64, goamd64: v3, output: amd64-v3 }
+          - { goos: freebsd, goarch: arm64, output: arm64 }
+
+          # Android builds with the NDK toolchain used by Mihomo.
+          - { goos: android, goarch: '386', ndk: i686-linux-android34, output: '386' }
+          - { goos: android, goarch: amd64, ndk: x86_64-linux-android34, output: amd64 }
+          - { goos: android, goarch: arm, ndk: armv7a-linux-androideabi34, output: armv7 }
+          - { goos: android, goarch: arm64, ndk: aarch64-linux-android34, output: arm64-v8 }
+
+          # Mihomo/MetaCubeX Go backport builds for older Windows versions.
+          - { goos: windows, goarch: '386', output: 386-go125, goversion: '1.25' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go125, goversion: '1.25' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go125, goversion: '1.25' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go125, goversion: '1.25' }
+          - { goos: windows, goarch: '386', output: 386-go124, goversion: '1.24' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go124, goversion: '1.24' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go124, goversion: '1.24' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go124, goversion: '1.24' }
+          - { goos: windows, goarch: '386', output: 386-go123, goversion: '1.23' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go123, goversion: '1.23' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go123, goversion: '1.23' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go123, goversion: '1.23' }
+          - { goos: windows, goarch: '386', output: 386-go122, goversion: '1.22' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go122, goversion: '1.22' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go122, goversion: '1.22' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go122, goversion: '1.22' }
+          - { goos: windows, goarch: '386', output: 386-go121, goversion: '1.21' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go121, goversion: '1.21' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go121, goversion: '1.21' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go121, goversion: '1.21' }
+          - { goos: windows, goarch: '386', output: 386-go120, goversion: '1.20' }
+          - { goos: windows, goarch: amd64, goamd64: v1, output: amd64-v1-go120, goversion: '1.20' }
+          - { goos: windows, goarch: amd64, goamd64: v2, output: amd64-v2-go120, goversion: '1.20' }
+          - { goos: windows, goarch: amd64, goamd64: v3, output: amd64-v3-go120, goversion: '1.20' }
+
+          # Older macOS builds from the same backport toolchain.
+          - { goos: darwin, goarch: arm64, output: arm64-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: amd64, goamd64: v1, output: amd64-v1-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: amd64, goamd64: v2, output: amd64-v2-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: amd64, goamd64: v3, output: amd64-v3-go124, goversion: '1.24' }
+          - { goos: darwin, goarch: arm64, output: arm64-go122, goversion: '1.22' }
+          - { goos: darwin, goarch: amd64, goamd64: v1, output: amd64-v1-go122, goversion: '1.22' }
+          - { goos: darwin, goarch: amd64, goamd64: v2, output: amd64-v2-go122, goversion: '1.22' }
+          - { goos: darwin, goarch: amd64, goamd64: v3, output: amd64-v3-go122, goversion: '1.22' }
+          - { goos: darwin, goarch: arm64, output: arm64-go120, goversion: '1.20' }
+          - { goos: darwin, goarch: amd64, goamd64: v1, output: amd64-v1-go120, goversion: '1.20' }
+          - { goos: darwin, goarch: amd64, goamd64: v2, output: amd64-v2-go120, goversion: '1.20' }
+          - { goos: darwin, goarch: amd64, goamd64: v3, output: amd64-v3-go120, goversion: '1.20' }
+
+          # Linux compatibility builds with the Go 1.23 backport.
+          - { goos: linux, goarch: '386', output: 386-go123, goversion: '1.23' }
+          - { goos: linux, goarch: amd64, goamd64: v1, output: amd64-v1-go123, goversion: '1.23', test: test }
+          - { goos: linux, goarch: amd64, goamd64: v2, output: amd64-v2-go123, goversion: '1.23' }
+          - { goos: linux, goarch: amd64, goamd64: v3, output: amd64-v3-go123, goversion: '1.23' }
+          - { goos: linux, goarch: '386', output: 386-go120, goversion: '1.20' }
+          - { goos: linux, goarch: amd64, goamd64: v1, output: amd64-v1-go120, goversion: '1.20', test: test }
+          - { goos: linux, goarch: amd64, goamd64: v2, output: amd64-v2-go120, goversion: '1.20' }
+          - { goos: linux, goarch: amd64, goamd64: v3, output: amd64-v3-go120, goversion: '1.20' }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go from MetaCubeX backport
+        if: ${{ matrix.goversion != 'custom' }}
+        uses: actions/setup-go@v7
+        with:
+          # 使用 Mihomo 官方 MetaCubeX/go backport；不需要把该仓库克隆进来。
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: ${{ matrix.goversion || '1.26' }}
+
+      - name: Set up Go for loong64 ABI1
+        if: ${{ matrix.goversion == 'custom' }}
+        uses: actions/setup-go@v7
+        with:
+          # Mihomo 对 loong64 ABI1 使用独立的 backport 工具链。
+          go-download-base-url: https://github.com/MetaCubeX/loongarch64-golang/releases/download/1.26.0
+          go-version: 1.26.0
+
+      - name: Set up Android NDK
+        if: ${{ matrix.goos == 'android' }}
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29-beta1
+
+      - name: Configure Android compiler
+        if: ${{ matrix.goos == 'android' }}
+        run: |
+          echo "CC=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.ndk }}-clang" >> "$GITHUB_ENV"
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+
+      - name: Verify Go installation
+        run: go version
+
+      - name: Set artifact version
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$VERSION_INPUT" ]; then
+            version="${VERSION_INPUT#v}"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${GITHUB_REF_NAME,,}-${GITHUB_SHA:0:7}"
+            version="${version//\//-}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test
+        if: ${{ matrix.test == 'test' }}
+        run: go test ./...
+
+      - name: Build and package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GO386: ${{ matrix.go386 }}
+          GOAMD64: ${{ matrix.goamd64 }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          TARGET_NAME: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          base="ysunethelper_${version}_${GOOS}_${TARGET_NAME}"
+          mkdir -p dist
+
+          if [ "$GOOS" = windows ]; then
+            binary="dist/${base}.exe"
+          else
+            binary="dist/${base}"
+          fi
+
+          CGO_ENABLED="${CGO_ENABLED:-0}" go build -trimpath -ldflags='-s -w -buildid=' -o "$binary" ./cmd/ysunethelper
+
+          # 保留裸二进制，并提供 Mihomo 风格的单架构压缩包。
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -q "${base}.zip" "$(basename "$binary")")
+          else
+            gzip -c "$binary" > "${binary}.gz"
+          fi
+
+      - name: Package Linux distributions
+        if: ${{ matrix.debian != '' || matrix.rpm != '' || matrix.pacman != '' }}
+        env:
+          DEBIAN_ARCH: ${{ matrix.debian }}
+          RPM_ARCH: ${{ matrix.rpm }}
+          PACMAN_ARCH: ${{ matrix.pacman }}
+          TARGET_NAME: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          base="ysunethelper_${version}_linux_${TARGET_NAME}"
+          binary="dist/${base}"
+          package_root="${RUNNER_TEMP}/ysunethelper-package-root"
+          rm -rf "$package_root"
+          mkdir -p "$package_root/usr/local/bin" "$package_root/lib/systemd/system"
+          install -m 0755 "$binary" "$package_root/usr/local/bin/ysunethelper"
+          install -m 0644 deploy/ysunethelper.service \
+            "$package_root/lib/systemd/system/ysunethelper.service"
+
+          sudo gem install --no-document fpm
+          if [ -n "${DEBIAN_ARCH:-}" ]; then
+            fpm -s dir -t deb -n ysunethelper -v "$version" \
+              -p "dist/${base}.deb" --architecture "$DEBIAN_ARCH" \
+              --description "燕山大学校园网认证助手" \
+              --license MIT \
+              "$package_root/usr=/usr" "$package_root/lib=/lib"
+          fi
+          if [ -n "${RPM_ARCH:-}" ]; then
+            fpm -s dir -t rpm -n ysunethelper -v "$version" \
+              -p "dist/${base}.rpm" --architecture "$RPM_ARCH" \
+              --description "燕山大学校园网认证助手" \
+              --license MIT \
+              "$package_root/usr=/usr" "$package_root/lib=/lib"
+          fi
+          if [ -n "${PACMAN_ARCH:-}" ]; then
+            sudo apt-get update
+            sudo apt-get install -y libarchive-tools
+            fpm -s dir -t pacman -n ysunethelper -v "$version" \
+              -p "dist/${base}.pkg.tar.zst" --architecture "$PACMAN_ARCH" \
+              --description "燕山大学校园网认证助手" \
+              --license MIT \
+              "$package_root/usr=/usr" "$package_root/lib=/lib"
+          fi
+
+      - name: Generate checksums
+        env:
+          TARGET_NAME: ${{ matrix.output }}
+        run: |
+          version="${VERSION#v}"
+          base="ysunethelper_${version}_${{ matrix.goos }}_${TARGET_NAME}"
+          sha256sum dist/* > "dist/${base}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ysunethelper-${{ matrix.goos }}-${{ matrix.output }}
+          path: dist/*
+          if-no-files-found: error
+
+  bundle:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ysunethelper-*
+          path: binaries
+          merge-multiple: true
+
+      - name: Set artifact version
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$VERSION_INPUT" ]; then
+            version="${VERSION_INPUT#v}"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${GITHUB_REF_NAME,,}-${GITHUB_SHA:0:7}"
+            version="${version//\//-}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Create all-architectures archive
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          mkdir -p dist
+          files=$(find binaries -maxdepth 1 -type f \
+            ! -name '*.gz' ! -name '*.zip' ! -name '*.deb' \
+            ! -name '*.rpm' ! -name '*.pkg.tar.zst' ! -name '*.sha256' \
+            -printf '%f\n' | sort)
+          test -n "$files"
+          tar -C binaries -czf "dist/ysunethelper_${version}_all_architectures.tar.gz" $files
+
+      - name: Upload all-architectures artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ysunethelper-all-architectures
+          path: dist/ysunethelper_*_all_architectures.tar.gz
+          if-no-files-found: error

@@ -219,6 +219,10 @@ type Client struct {
 }
 
 func NewClient(timeout time.Duration) *Client {
+	// 显式使用系统代理环境变量（HTTP_PROXY / HTTPS_PROXY / NO_PROXY）。
+	// Clone 避免修改共享的 http.DefaultTransport。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyFromEnvironment
 	return &Client{
 		hc: &http.Client{
 			// 永不自动跟随：302 语义（POST 转 GET、占位 IP 劫持、JS 跳转）
@@ -226,6 +230,7 @@ func NewClient(timeout time.Duration) *Client {
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
+			Transport: transport,
 		},
 		Cookies: NewCookieStore(),
 		Timeout: timeout,
@@ -374,6 +379,10 @@ func resolveURL(base, ref string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("bad base URL %q: %w", base, err)
 	}
+	// ePortal 偶尔在 Location 的 accessTime 参数中原样放入空格。直连
+	// 服务器通常能容忍它，但严格的 HTTP 代理会关闭该非法请求；先按 URL
+	// 语义编码，保证通过代理时也能继续跳转链。
+	ref = strings.ReplaceAll(ref, " ", "%20")
 	r, err := url.Parse(ref)
 	if err != nil {
 		return "", fmt.Errorf("bad redirect target %q: %w", ref, err)

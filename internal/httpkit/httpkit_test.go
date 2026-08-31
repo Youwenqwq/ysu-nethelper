@@ -110,3 +110,21 @@ func TestIsNetworkError(t *testing.T) {
 		t.Fatalf("expected NetworkError, got %v", err)
 	}
 }
+
+func TestNewClientUsesSystemProxyResolver(t *testing.T) {
+	c := NewClient(time.Second)
+	transport, ok := c.hc.Transport.(*http.Transport)
+	if !ok || transport.Proxy == nil {
+		t.Fatal("client transport must use the system proxy resolver")
+	}
+}
+
+func TestResolveURLEncodesSpacesInRedirect(t *testing.T) {
+	got, err := resolveURL("https://auth1.ysu.edu.cn/eportal/redirect.jsp", "/portal?accessTime=2026-08-31 08:15:24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://auth1.ysu.edu.cn/portal?accessTime=2026-08-31%2008:15:24"; got != want {
+		t.Errorf("resolveURL() = %q, want %q", got, want)
+	}
+}

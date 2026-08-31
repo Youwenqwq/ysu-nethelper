@@ -28,6 +28,9 @@ func New(urls []string, timeout time.Duration) *Prober {
 	if len(urls) == 0 {
 		urls = DefaultURLs
 	}
+	// 与认证请求保持一致，支持 HTTP_PROXY / HTTPS_PROXY / NO_PROXY。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyFromEnvironment
 	return &Prober{
 		urls: urls,
 		hc: &http.Client{
@@ -36,6 +39,7 @@ func New(urls []string, timeout time.Duration) *Prober {
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
+			Transport: transport,
 		},
 	}
 }

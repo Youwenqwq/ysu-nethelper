@@ -31,6 +31,7 @@ const (
 	serviceLoginURL      = baseURL + "/eportal/network/serviceLogin"
 	userOnlineURL        = baseURL + "/eportal/network/userOnline"
 	offlineURL           = baseURL + "/eportal/network/offline"
+	accountInfoURL       = baseURL + "/eportal/operator/getAccountInfo"
 
 	casSSOLoginURL = baseURL + "/cas-sso/login"
 	// 「统一身份认证」外部提供者入口（CAS 委托认证）
@@ -73,7 +74,18 @@ func (c *Client) GetStatus(ctx context.Context) (*OnlineStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.queryStatus(ctx, info["sessionId"])
+	status, err := c.queryStatus(ctx, info["sessionId"])
+	if err != nil || !status.Online {
+		return status, err
+	}
+
+	// getOnlineUserInfo 只提供学工号（userName）。真实姓名由账户信息接口
+	// 返回，且同样依赖本次 portal 流程的 sessionId。
+	status.Name, err = c.queryAccountName(ctx, info["sessionId"])
+	if err != nil {
+		return nil, err
+	}
+	return status, nil
 }
 
 // LoginViaCAS 通过统一身份认证（CAS 委托）完成校园网认证。
@@ -285,6 +297,22 @@ func (c *Client) queryStatus(ctx context.Context, sessionID string) (*OnlineStat
 		Message:  str("message"),
 		Raw:      info,
 	}, nil
+}
+
+// queryAccountName 查询当前认证账户的真实姓名。该接口的响应 data 中包含
+// name；不要从 getOnlineUserInfo 的 userName 推断，它在燕大 portal 中是学工号。
+func (c *Client) queryAccountName(ctx context.Context, sessionID string) (string, error) {
+	data, err := c.postJSON(ctx, accountInfoURL, map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return "", err
+	}
+	var account struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &account); err != nil {
+		return "", fmt.Errorf("%w: bad getAccountInfo data: %v", ErrProtocol, err)
+	}
+	return account.Name, nil
 }
 
 // casSSOLoginURL 构造携带流程会话参数的 cas-sso 登录页 URL。

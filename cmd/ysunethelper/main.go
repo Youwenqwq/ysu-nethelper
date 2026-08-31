@@ -3,7 +3,8 @@
 // 用法：
 //
 //	ysunethelper [-config path] status    查询 portal 在线状态与 Internet 连通性
-//	ysunethelper [-config path] login     认证上线（CAS → ePortal；TGC 失效且无
+//	ysunethelper [-config path] login [-u username] [-p password] [-s service]
+//	                                      认证上线（CAS → ePortal；TGC 失效且无
 //	                                      配置账密时交互式询问）
 //	ysunethelper [-config path] logout    登出下线
 //	ysunethelper [-config path] daemon    Daemon 模式：自动保持在线（前台运行，
@@ -18,15 +19,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"ysunethelper/internal/authd"
 	"ysunethelper/internal/config"
+	"ysunethelper/internal/logx"
 	"ysunethelper/internal/probe"
 	"ysunethelper/internal/prompt"
 )
@@ -36,39 +38,46 @@ func main() {
 	configPath := fs.String("config", "", "配置文件路径（默认依次尝试 ./ysunethelper.json、~/.config/ysunethelper/config.json、/etc/ysunethelper/config.json）")
 	verbose := fs.Bool("v", false, "debug 级日志")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: ysunethelper [-config path] [-v] <status|login|logout|daemon>\n")
+		fmt.Fprintf(os.Stderr, "usage: ysunethelper [-config path] [-v] <status|login|logout|daemon>\n\n")
+		fmt.Fprintln(os.Stderr, "login: ysunethelper login [-u username] [-p password] [-s service]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(os.Args[1:])
-	if fs.NArg() != 1 {
+	args := fs.Args()
+	if len(args) < 1 {
 		fs.Usage()
 		os.Exit(2)
 	}
-	cmd := fs.Arg(0)
+	cmd := args[0]
+	cmdArgs := args[1:]
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	switch cmd {
 	case "status":
+		ensureNoCommandArgs(cmd, cmdArgs)
 		cfg, err := config.LoadOptional(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
 		cmdStatus(ctx, cfg)
 	case "logout":
+		ensureNoCommandArgs(cmd, cmdArgs)
 		cfg, err := config.LoadOptional(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
 		cmdLogout(ctx, cfg)
 	case "login":
+		username, password, service := parseLoginArgs(cmdArgs)
 		cfg, err := config.LoadOptional(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdLogin(ctx, cfg)
+		cmdLogin(ctx, cfg, username, password, service)
 	case "daemon":
+		ensureNoCommandArgs(cmd, cmdArgs)
 		cfg, err := config.Load(*configPath)
 		if err != nil && config.IsNotExist(err) {
 			// daemon 首次运行：在当前目录（或 -config 指定处）生成模板后退出
@@ -93,6 +102,35 @@ func main() {
 		fs.Usage()
 		os.Exit(2)
 	}
+}
+
+// parseLoginArgs 解析 login 子命令的参数。它们仅影响本次登录，不会改写配置文件。
+func parseLoginArgs(args []string) (username, password, service string) {
+	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	fs.StringVar(&username, "u", "", "统一身份认证用户名")
+	fs.StringVar(&username, "username", "", "统一身份认证用户名")
+	fs.StringVar(&password, "p", "", "统一身份认证密码")
+	fs.StringVar(&password, "password", "", "统一身份认证密码")
+	fs.StringVar(&service, "s", "", "网络服务名（campus/unicom/telecom/mobile 或服务全名）")
+	fs.StringVar(&service, "service", "", "网络服务名（campus/unicom/telecom/mobile 或服务全名）")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: ysunethelper login [-u username] [-p password] [-s service]")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	return username, password, service
+}
+
+func ensureNoCommandArgs(cmd string, args []string) {
+	if len(args) == 0 {
+		return
+	}
+	fatal("%s 不接受额外参数: %v", cmd, args)
 }
 
 func cmdStatus(ctx context.Context, cfg *config.Config) {
@@ -122,7 +160,16 @@ func cmdStatus(ctx context.Context, cfg *config.Config) {
 	}
 }
 
-func cmdLogin(ctx context.Context, cfg *config.Config) {
+func cmdLogin(ctx context.Context, cfg *config.Config, username, password, service string) {
+	if username != "" {
+		cfg.Username = username
+	}
+	if password != "" {
+		cfg.Password = password
+	}
+	if service != "" {
+		cfg.Service = service
+	}
 	casClient, portalClient, err := authd.NewClients(cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -133,8 +180,12 @@ func cmdLogin(ctx context.Context, cfg *config.Config) {
 		fatal("CAS 网关不可达: %v", err)
 	}
 	if !ok && (cfg.Username == "" || cfg.Password == "") {
-		u, p, err := prompt.Credentials(os.Stdin)
+		u, p, err := prompt.Credentials(ctx, os.Stdin)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Fprintln(os.Stderr, "ysunethelper: 已取消")
+				os.Exit(130)
+			}
 			fatal("%v", err)
 		}
 		cfg.Username, cfg.Password = u, p
@@ -158,11 +209,11 @@ func cmdLogout(ctx context.Context, cfg *config.Config) {
 }
 
 func cmdDaemon(ctx context.Context, cfg *config.Config, verbose bool) {
-	level := slog.LevelInfo
+	level := logx.LevelInfo
 	if verbose {
-		level = slog.LevelDebug
+		level = logx.LevelDebug
 	}
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	log := logx.New(os.Stdout, level)
 	d := authd.New(cfg, log)
 	if err := d.Run(ctx); err != nil {
 		fatal("daemon 异常退出: %v", err)

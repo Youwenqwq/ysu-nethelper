@@ -4,6 +4,7 @@ package eportal
 type OnlineStatus struct {
 	Online   bool           `json:"online"`
 	Username string         `json:"username,omitempty"` // 在线时的准入账号（学工号）
+	Name     string         `json:"name,omitempty"`     // 认证账户姓名
 	Service  string         `json:"service,omitempty"`  // 网络服务名（如 "校园网"）
 	UserIP   string         `json:"user_ip,omitempty"`
 	UserMAC  string         `json:"user_mac,omitempty"`

@@ -5,6 +5,7 @@ package prompt
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -12,14 +13,14 @@ import (
 
 // Credentials 从终端交互读取用户名与密码。stdin 不是终端时报错
 // （Daemon/服务场景应使用配置文件而非交互输入）。
-func Credentials(stdin *os.File) (username, password string, err error) {
+func Credentials(ctx context.Context, stdin *os.File) (username, password string, err error) {
 	if !isTerminal(stdin) {
 		return "", "", fmt.Errorf("stdin 不是终端，无法交互输入；请在配置文件中提供 username/password，或用 -config 指定")
 	}
 	r := bufio.NewReader(stdin)
 
 	fmt.Fprint(os.Stderr, "用户名: ")
-	line, err := r.ReadString('\n')
+	line, err := readLine(ctx, r)
 	if err != nil {
 		return "", "", fmt.Errorf("读取用户名失败: %w", err)
 	}
@@ -29,7 +30,7 @@ func Credentials(stdin *os.File) (username, password string, err error) {
 	}
 
 	fmt.Fprint(os.Stderr, "密码: ")
-	password, err = readPassword(stdin, r)
+	password, err = readPassword(ctx, stdin, r)
 	fmt.Fprintln(os.Stderr) // 密码无回显，补一个换行
 	if err != nil {
 		return "", "", fmt.Errorf("读取密码失败: %w", err)
@@ -38,4 +39,26 @@ func Credentials(stdin *os.File) (username, password string, err error) {
 		return "", "", fmt.Errorf("密码不能为空")
 	}
 	return username, password, nil
+}
+
+type lineResult struct {
+	line string
+	err  error
+}
+
+// readLine 使终端输入可被 context 中断。读协程在取消后可能仍阻塞在 stdin，
+// 但调用方会随即退出进程；通道带缓冲，避免其在稍后读到输入时泄漏阻塞。
+func readLine(ctx context.Context, r *bufio.Reader) (string, error) {
+	result := make(chan lineResult, 1)
+	go func() {
+		line, err := r.ReadString('\n')
+		result <- lineResult{line: line, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case got := <-result:
+		return got.line, got.err
+	}
 }

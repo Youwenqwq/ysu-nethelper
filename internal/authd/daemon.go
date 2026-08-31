@@ -18,14 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"math/rand/v2"
+	"math/rand"
 	"time"
 
 	"ysunethelper/internal/cas"
 	"ysunethelper/internal/config"
 	"ysunethelper/internal/eportal"
 	"ysunethelper/internal/httpkit"
+	"ysunethelper/internal/logx"
 	"ysunethelper/internal/probe"
 )
 
@@ -46,7 +46,7 @@ type Daemon struct {
 	cas    *cas.Client
 	portal *eportal.Client
 	prober *probe.Prober
-	log    *slog.Logger
+	log    *logx.Logger
 
 	state         State
 	backoff       time.Duration
@@ -54,7 +54,7 @@ type Daemon struct {
 }
 
 // New 构造 Daemon。cfg 必须已 ApplyDefaults。
-func New(cfg *config.Config, log *slog.Logger) *Daemon {
+func New(cfg *config.Config, log *logx.Logger) *Daemon {
 	timeout := cfg.HTTPTimeout.D()
 	casClient := cas.New(timeout)
 	if err := casClient.LoadCredential(cfg.CredentialPath); err != nil {
@@ -241,7 +241,14 @@ func (d *Daemon) setState(s State) {
 func (d *Daemon) sleepBackoff(ctx context.Context) {
 	d.setState(StateBackoff)
 	d.sleep(ctx, d.backoff)
-	d.backoff = min(d.backoff*2, d.cfg.Daemon.BackoffMax.D())
+	d.backoff = minDuration(d.backoff*2, d.cfg.Daemon.BackoffMax.D())
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // sleep 带 ±20% 抖动睡眠；ctx 取消时返回 false。
