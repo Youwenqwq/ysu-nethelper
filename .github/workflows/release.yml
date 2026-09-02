@@ -71,15 +71,6 @@ jobs:
             gzip -c "$binary" > "${binary}.gz"
           fi
 
-      - name: Generate checksums
-        env:
-          TARGET_NAME: ${{ matrix.output }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          version="${VERSION#v}"
-          base="ysunethelper_${version}_${{ matrix.goos }}_${TARGET_NAME}"
-          sha256sum dist/* > "dist/${base}.sha256"
-
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -229,15 +220,6 @@ jobs:
           pattern: ysunethelper-*
           path: artifacts
           merge-multiple: true
-
-      - name: Generate release checksums
-        working-directory: artifacts
-        run: |
-          set -euo pipefail
-          find . -maxdepth 1 -type f ! -name 'sha256sums.txt' -printf '%f\n' | sort > release-files.txt
-          test -s release-files.txt
-          sha256sum -- $(cat release-files.txt) > sha256sums.txt
-          rm release-files.txt
 
       - name: Select release notes
         env:
