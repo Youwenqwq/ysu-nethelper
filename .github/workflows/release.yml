@@ -202,7 +202,7 @@ jobs:
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
-          name: ysunethelper-linux-packages
+          name: ysunethelper-linux-packages-${{ matrix.output }}
           path: |
             dist/*.deb
             dist/*.rpm
@@ -213,26 +213,13 @@ jobs:
     needs: [build, package]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - name: Download all architecture artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: ysunethelper-*
           path: artifacts
           merge-multiple: true
-
-      - name: Create all-architectures archive
-        working-directory: artifacts
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          version="${VERSION#v}"
-          mapfile -t binaries < <(find . -maxdepth 1 -type f \
-            ! -name '*.gz' ! -name '*.zip' ! -name '*.deb' \
-            ! -name '*.rpm' ! -name '*.pkg.tar.zst' ! -name '*.sha256' \
-            -printf '%f\n' | sort)
-          ((${#binaries[@]} > 0))
-          tar -czf "ysunethelper_${version}_all_architectures.tar.gz" "${binaries[@]}"
 
       - name: Generate release checksums
         working-directory: artifacts
@@ -242,6 +229,15 @@ jobs:
           test -s release-files.txt
           sha256sum -- $(cat release-files.txt) > sha256sums.txt
           rm release-files.txt
+
+      - name: Select release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes_file="release-notes/${VERSION}.md"
+          test -f "$notes_file"
+          cp "$notes_file" "${RUNNER_TEMP}/release-notes.md"
 
       - name: Publish GitHub Release
         working-directory: artifacts
@@ -253,5 +249,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             "${release_files[@]}"
