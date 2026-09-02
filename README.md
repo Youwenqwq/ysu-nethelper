@@ -17,16 +17,24 @@ CGO_ENABLED=0 go build -ldflags='-s -w' -o ysunethelper ./cmd/ysunethelper
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64  go build -ldflags='-s -w' -o ysunethelper-arm64  ./cmd/ysunethelper
 ```
 
-`CI` workflow 在推送 `main`/`master` 分支、提交 Pull Request 或手动运行时，会使用
-Mihomo 同款的 `MetaCubeX/go` backport 工具链构建 Linux、Darwin、Windows、
-FreeBSD、Android 等 90 个平台/架构变体。每个变体会上传一个 Actions Artifact，
-其中包含裸二进制及对应的 `.gz`/`.zip`（Linux 发行版还包含 `.deb`、`.rpm` 或
-`.pkg.tar.zst`）；另有 `ysunethelper-all-architectures` Artifact，内含全部裸
-二进制的总 `tar.gz` 压缩包。
+`CI` workflow 在推送 `main`/`master` 分支或提交 Pull Request 时运行：`go vet`、构建、
+`go test ./...` 与冒烟测试，使用项目声明的现代 Go 工具链。
 
-推送 `v*` 标签还会触发 `release.yml`，使用同一套 90 架构构建，将所有架构
-二进制、压缩包、发行版包和校验文件发布到 GitHub Release，并附加全架构二进制
-压缩包及总校验文件。
+推送 `v*` 标签会触发 `release.yml`，用现代 Go 单工具链交叉编译并发布以下平台/架构
+（每个目标附带裸二进制、`.gz`/`.zip` 压缩包与校验文件，另有全架构总 `tar.gz`）：
+
+| 平台 | 架构 |
+| ---- | ---- |
+| Linux | `amd64`(v2，兼容 J4125 等老 x86-64 软路由) · `amd64-v3`(新 CPU 原生加速) · `386` · `arm64` · `armv7` · `mipsle-softfloat` · `mips-softfloat` · `riscv64` |
+| macOS | `arm64`(Apple Silicon) · `amd64`(Intel) |
+| Windows | `amd64` |
+
+主流 Linux（`amd64`/`arm64`/`armv7`）另有 `.deb`/`.rpm`/`.pkg.tar.zst` 系统包，
+安装即含 `ysunethelper` 二进制与 systemd 服务单元；优先用系统包而不是手动解包。
+
+拿不准选哪个：x86 软路由/老机器用 `linux_amd64`，树莓派及多数 ARM 盒子用
+`linux_arm64`（老 32 位 ARM 用 `linux_armv7`），MT7621 等刷机路由用
+`linux_mipsle-softfloat`。
 
 ## 系统代理
 
