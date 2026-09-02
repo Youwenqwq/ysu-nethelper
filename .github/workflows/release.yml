@@ -127,32 +127,39 @@ jobs:
           install -m 0600 internal/config/template.json "$root/etc/ysunethelper/config.json"
           install -m 0644 deploy/ysunethelper.service "$root/lib/systemd/system/ysunethelper.service"
 
-          sudo gem install --no-document fpm
+          export GEM_HOME="${RUNNER_TEMP}/fpm-gems"
+          export PATH="${GEM_HOME}/bin:${PATH}"
+          gem install --no-document fpm
+          package_files=(
+            "$root/usr/local/bin/ysunethelper=/usr/local/bin/ysunethelper"
+            "$root/etc/ysunethelper/config.json=/etc/ysunethelper/config.json"
+            "$root/lib/systemd/system/ysunethelper.service=/lib/systemd/system/ysunethelper.service"
+          )
           if [ -n "${DEB_ARCH:-}" ]; then
             fpm -s dir -t deb -n ysunethelper -v "$VERSION" \
               -p "dist/${base}.deb" --architecture "$DEB_ARCH" \
-              --description "燕山大学校园网认证助手" \
+              --description "YSU campus network authentication helper" \
               --license MIT \
               --config-files /etc/ysunethelper/config.json \
-              "$root/usr=/usr" "$root/etc=/etc" "$root/lib=/lib"
+              "${package_files[@]}"
           fi
           if [ -n "${RPM_ARCH:-}" ]; then
             fpm -s dir -t rpm -n ysunethelper -v "$VERSION" \
               -p "dist/${base}.rpm" --architecture "$RPM_ARCH" \
-              --description "燕山大学校园网认证助手" \
+              --description "YSU campus network authentication helper" \
               --license MIT \
               --config-files /etc/ysunethelper/config.json \
-              "$root/usr=/usr" "$root/etc=/etc" "$root/lib=/lib"
+              "${package_files[@]}"
           fi
           if [ -n "${PACMAN_ARCH:-}" ]; then
             sudo apt-get update
             sudo apt-get install -y libarchive-tools
             fpm -s dir -t pacman -n ysunethelper -v "$VERSION" \
               -p "dist/${base}.pkg.tar.zst" --architecture "$PACMAN_ARCH" \
-              --description "燕山大学校园网认证助手" \
+              --description "YSU campus network authentication helper" \
               --license MIT \
               --config-files /etc/ysunethelper/config.json \
-              "$root/usr=/usr" "$root/etc=/etc" "$root/lib=/lib"
+              "${package_files[@]}"
           fi
 
       - name: Verify package configuration metadata
