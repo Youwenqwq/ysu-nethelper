@@ -119,7 +119,9 @@ jobs:
           set -euo pipefail
           base="ysunethelper_${VERSION}_linux_${OUTPUT}"
           binary="dist/${base}"
-          test -x "$binary"
+          # upload/download artifacts may not preserve the executable bit;
+          # install below restores it in the package payload.
+          test -f "$binary"
           root="${RUNNER_TEMP}/package-root"
           rm -rf "$root"
           mkdir -p "$root/usr/local/bin" "$root/etc/ysunethelper" "$root/lib/systemd/system"
