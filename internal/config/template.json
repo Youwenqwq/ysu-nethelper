@@ -1,0 +1,14 @@
+{
+  "username": "",
+  "password": "",
+  "service": "campus",
+  "daemon": {
+    "probe_interval": "60s",
+    "probe_confirm": 3,
+    "probe_confirm_gap": "3s",
+    "probe_timeout": "5s",
+    "nolink_interval": "15s",
+    "backoff_initial": "10s",
+    "backoff_max": "10m"
+  }
+}

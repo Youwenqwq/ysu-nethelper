@@ -10,10 +10,11 @@
 //	ysunethelper [-config path] daemon    Daemon 模式：自动保持在线（前台运行，
 //	                                      由 systemd/OpenRC 托管）
 //
-// 配置文件解析顺序：-config 指定 > 当前目录 ./ysunethelper.json >
+// daemon 默认解析：-config 指定 > 当前目录 ./ysunethelper.json >
 // ~/.config/ysunethelper/config.json > /etc/ysunethelper/config.json。
-// status/logout 无需配置文件；daemon 首次运行且未找到配置时，
-// 自动在当前目录生成 ysunethelper.json 模板（0600）后退出。
+// status/login/logout 的隐式解析不读取系统级配置；显式 -config 仍然生效。
+// daemon 首次运行且未找到配置时，自动在当前目录生成 ysunethelper.json
+// 模板（0600）后退出。
 package main
 
 import (
@@ -22,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"syscall"
@@ -33,9 +35,11 @@ import (
 	"ysunethelper/internal/prompt"
 )
 
+const configExitCode = 78 // EX_CONFIG
+
 func main() {
 	fs := flag.NewFlagSet("ysunethelper", flag.ExitOnError)
-	configPath := fs.String("config", "", "配置文件路径（默认依次尝试 ./ysunethelper.json、~/.config/ysunethelper/config.json、/etc/ysunethelper/config.json）")
+	configPath := fs.String("config", "", "配置文件路径（默认路径依命令而异；daemon 包含 /etc/ysunethelper/config.json）")
 	verbose := fs.Bool("v", false, "debug 级日志")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: ysunethelper [-config path] [-v] <status|login|logout|daemon>\n\n")
@@ -46,6 +50,7 @@ func main() {
 	args := fs.Args()
 	if len(args) < 1 {
 		fs.Usage()
+		printSystemConfigHint()
 		os.Exit(2)
 	}
 	cmd := args[0]
@@ -57,21 +62,21 @@ func main() {
 	switch cmd {
 	case "status":
 		ensureNoCommandArgs(cmd, cmdArgs)
-		cfg, err := config.LoadOptional(*configPath)
+		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
 		cmdStatus(ctx, cfg)
 	case "logout":
 		ensureNoCommandArgs(cmd, cmdArgs)
-		cfg, err := config.LoadOptional(*configPath)
+		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
 		cmdLogout(ctx, cfg)
 	case "login":
 		username, password, service := parseLoginArgs(cmdArgs)
-		cfg, err := config.LoadOptional(*configPath)
+		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
@@ -88,14 +93,14 @@ func main() {
 			if werr := config.WriteTemplate(target); werr != nil {
 				fatal("生成配置模板失败: %v", werr)
 			}
-			fmt.Printf("未找到配置文件，已生成模板 %s（权限 0600）。\n请填写 username/password 后重新运行。\n", target)
+			fmt.Printf("未找到配置文件，已生成模板 %s（权限 0600）。\n请编辑该文件填写 username/password，并确认 service；service 默认为“校园网”。\n完成后重新运行 daemon。\n", target)
 			os.Exit(0)
 		}
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
 		if err := cfg.Validate(); err != nil {
-			fatal("%v", err)
+			incompleteConfig(cfg.Path(), err)
 		}
 		cmdDaemon(ctx, cfg, *verbose)
 	default:
@@ -223,4 +228,32 @@ func cmdDaemon(ctx context.Context, cfg *config.Config, verbose bool) {
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "ysunethelper: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+func incompleteConfig(path string, err error) {
+	printIncompleteConfigHint(path, err)
+	os.Exit(configExitCode)
+}
+
+func printSystemConfigHint() {
+	if _, err := os.Stat(config.SystemPath); err != nil {
+		return
+	}
+	cfg, err := config.Load(config.SystemPath)
+	if err == nil {
+		if validationErr := cfg.Validate(); validationErr != nil {
+			printIncompleteConfigHint(cfg.Path(), validationErr)
+		}
+		return
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		fmt.Fprintf(os.Stderr, "检测到系统配置文件 %s，但当前用户无权读取。\n请使用 sudoedit %s 检查配置，完成后再启动 daemon。\n",
+			config.SystemPath, config.SystemPath)
+	}
+}
+
+func printIncompleteConfigHint(path string, err error) {
+	fmt.Fprintf(os.Stderr, "ysunethelper: 配置文件 %s 尚未完成配置：%v\n", path, err)
+	fmt.Fprintf(os.Stderr, "请编辑该文件（例如 sudoedit %s），填写 username/password，并确认 service；service 默认为“校园网”。\n", path)
+	fmt.Fprintln(os.Stderr, "配置完成后再启动 daemon，例如：sudo systemctl enable --now ysunethelper")
 }

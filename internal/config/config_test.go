@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,75 @@ func TestResolvePathOrder(t *testing.T) {
 	}
 }
 
+// TestResolveCLIPathOrder 验证交互式 CLI 不回退到系统级配置。
+func TestResolveCLIPathOrder(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	cwd := filepath.Join(tmp, "cwd")
+	for _, d := range []string{home, cwd} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", home)
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWd)
+
+	if got := ResolveCLIPath("/custom/x.json"); got != "/custom/x.json" {
+		t.Errorf("flag path: got %q", got)
+	}
+	want := filepath.Join(home, ".config", "ysunethelper", "config.json")
+	if got := ResolveCLIPath(""); got != want {
+		t.Errorf("no config: got %q, want %q", got, want)
+	}
+
+	if err := os.WriteFile(filepath.Join(home, ".config", "ysunethelper", "config.json"), []byte("{}"), 0o600); err == nil {
+		t.Fatal("expected missing parent directory error")
+	}
+	if err := os.MkdirAll(filepath.Dir(want), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveCLIPath(""); got != want {
+		t.Errorf("user config: got %q, want %q", got, want)
+	}
+
+	cwdPath := filepath.Join(cwd, CWDConfigFilename)
+	if err := os.WriteFile(cwdPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveCLIPath(""); got != CWDConfigFilename {
+		t.Errorf("cwd config: got %q, want %q", got, CWDConfigFilename)
+	}
+}
+
+// TestLoadOptionalCLIMissing 无用户配置时返回默认值且不尝试系统级配置。
+func TestLoadOptionalCLIMissing(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWd)
+
+	c, err := LoadOptionalCLI("")
+	if err != nil {
+		t.Fatalf("LoadOptionalCLI: %v", err)
+	}
+	if got, want := c.Path(), filepath.Join(tmp, ".config", "ysunethelper", "config.json"); got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+	if c.Service != "校园网" || c.Daemon.ProbeConfirm == 0 {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+}
+
 // TestLoadOptionalMissing 无配置时返回纯默认值，不报错。
 func TestLoadOptionalMissing(t *testing.T) {
 	tmp := t.TempDir()
@@ -64,8 +134,20 @@ func TestLoadOptionalMissing(t *testing.T) {
 		t.Errorf("defaults not applied: %+v", c)
 	}
 	// 无凭据时 Validate 必须失败（daemon 路径依赖此行为）
-	if err := c.Validate(); err == nil {
+	err = c.Validate()
+	if err == nil {
 		t.Error("Validate should fail without credentials")
+	}
+	if !strings.Contains(err.Error(), "username") || !strings.Contains(err.Error(), "password") {
+		t.Errorf("Validate error should name all missing fields: %v", err)
+	}
+}
+
+// TestValidateBlankService 空白 service 不能绕过配置校验。
+func TestValidateBlankService(t *testing.T) {
+	c := &Config{Username: "user", Password: "password", Service: " \t"}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "service") {
+		t.Errorf("Validate should reject blank service, got %v", err)
 	}
 }
 

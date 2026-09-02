@@ -122,8 +122,9 @@ jobs:
           test -x "$binary"
           root="${RUNNER_TEMP}/package-root"
           rm -rf "$root"
-          mkdir -p "$root/usr/local/bin" "$root/lib/systemd/system"
+          mkdir -p "$root/usr/local/bin" "$root/etc/ysunethelper" "$root/lib/systemd/system"
           install -m 0755 "$binary" "$root/usr/local/bin/ysunethelper"
+          install -m 0600 internal/config/template.json "$root/etc/ysunethelper/config.json"
           install -m 0644 deploy/ysunethelper.service "$root/lib/systemd/system/ysunethelper.service"
 
           sudo gem install --no-document fpm
@@ -132,14 +133,16 @@ jobs:
               -p "dist/${base}.deb" --architecture "$DEB_ARCH" \
               --description "燕山大学校园网认证助手" \
               --license MIT \
-              "$root/usr=/usr" "$root/lib=/lib"
+              --config-files /etc/ysunethelper/config.json \
+              "$root/usr=/usr" "$root/etc=/etc" "$root/lib=/lib"
           fi
           if [ -n "${RPM_ARCH:-}" ]; then
             fpm -s dir -t rpm -n ysunethelper -v "$VERSION" \
               -p "dist/${base}.rpm" --architecture "$RPM_ARCH" \
               --description "燕山大学校园网认证助手" \
               --license MIT \
-              "$root/usr=/usr" "$root/lib=/lib"
+              --config-files /etc/ysunethelper/config.json \
+              "$root/usr=/usr" "$root/etc=/etc" "$root/lib=/lib"
           fi
           if [ -n "${PACMAN_ARCH:-}" ]; then
             sudo apt-get update
@@ -148,7 +151,52 @@ jobs:
               -p "dist/${base}.pkg.tar.zst" --architecture "$PACMAN_ARCH" \
               --description "燕山大学校园网认证助手" \
               --license MIT \
-              "$root/usr=/usr" "$root/lib=/lib"
+              --config-files /etc/ysunethelper/config.json \
+              "$root/usr=/usr" "$root/etc=/etc" "$root/lib=/lib"
+          fi
+
+      - name: Verify package configuration metadata
+        env:
+          OUTPUT: ${{ matrix.output }}
+          DEB_ARCH: ${{ matrix.deb }}
+          RPM_ARCH: ${{ matrix.rpm }}
+          PACMAN_ARCH: ${{ matrix.pacman }}
+        run: |
+          set -euo pipefail
+          base="ysunethelper_${VERSION}_linux_${OUTPUT}"
+          config="/etc/ysunethelper/config.json"
+
+          if [ -n "${DEB_ARCH:-}" ]; then
+            extract="${RUNNER_TEMP}/package-check-deb"
+            control="${RUNNER_TEMP}/package-check-control"
+            rm -rf "$extract" "$control"
+            mkdir -p "$extract" "$control"
+            dpkg-deb -x "dist/${base}.deb" "$extract"
+            dpkg-deb -e "dist/${base}.deb" "$control"
+            test -f "$extract$config"
+            test "$(stat -c '%a' "$extract$config")" = "600"
+            cmp "$extract$config" internal/config/template.json
+            test "$(cat "$control/conffiles")" = "$config"
+          fi
+
+          if [ -n "${RPM_ARCH:-}" ]; then
+            test "$(rpm -qp --configfiles "dist/${base}.rpm")" = "$config"
+          fi
+
+          if [ -n "${PACMAN_ARCH:-}" ]; then
+            extract="${RUNNER_TEMP}/package-check-pacman"
+            pkginfo="${RUNNER_TEMP}/package-check-pkginfo"
+            rm -rf "$extract"
+            mkdir -p "$extract"
+            bsdtar -xf "dist/${base}.pkg.tar.zst" -C "$extract" \
+              etc/ysunethelper/config.json .PKGINFO
+            test "$(stat -c '%a' "$extract/etc/ysunethelper/config.json")" = "600"
+            cmp "$extract/etc/ysunethelper/config.json" internal/config/template.json
+            bsdtar -xOf "dist/${base}.pkg.tar.zst" .PKGINFO > "$pkginfo"
+            case "$(cat "$pkginfo")" in
+              *"backup = etc/ysunethelper/config.json"*|*"backup = /etc/ysunethelper/config.json"*) ;;
+              *) echo "pacman package does not mark the config as backup" >&2; exit 1 ;;
+            esac
           fi
 
       - name: Upload packages

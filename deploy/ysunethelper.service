@@ -7,6 +7,7 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/ysunethelper -config /etc/ysunethelper/config.json daemon
 Restart=on-failure
 RestartSec=5
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=multi-user.target

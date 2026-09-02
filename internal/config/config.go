@@ -3,14 +3,19 @@
 package config
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+//go:embed template.json
+var templateData []byte
 
 // Duration 是 JSON 字符串形式的 time.Duration（如 "60s"、"5m"）。
 type Duration time.Duration
@@ -81,6 +86,19 @@ const CWDConfigFilename = "ysunethelper.json"
 // SystemPath 是系统级配置路径（服务部署场景）。
 const SystemPath = "/etc/ysunethelper/config.json"
 
+// ResolveCLIPath 解析交互式 CLI 的配置路径：flagPath 显式指定 >
+// 当前目录 ysunethelper.json > 用户级默认路径。
+// 系统服务应使用 ResolvePath 或在服务单元中显式指定 SystemPath。
+func ResolveCLIPath(flagPath string) string {
+	if flagPath != "" {
+		return flagPath
+	}
+	if _, err := os.Stat(CWDConfigFilename); err == nil {
+		return CWDConfigFilename
+	}
+	return DefaultPath()
+}
+
 // ResolvePath 解析配置文件路径：flagPath 显式指定 > 当前目录
 // ysunethelper.json > 用户级默认路径 > 系统级路径。
 func ResolvePath(flagPath string) string {
@@ -104,27 +122,12 @@ func IsNotExist(err error) bool {
 // WriteTemplate 在 path 生成一份配置模板（0600），
 // 用于 daemon 首次运行时的自动初始化。
 func WriteTemplate(path string) error {
-	tmpl := `{
-  "username": "",
-  "password": "",
-  "service": "校园网",
-  "daemon": {
-    "probe_interval": "60s",
-    "probe_confirm": 3,
-    "probe_confirm_gap": "3s",
-    "probe_timeout": "5s",
-    "nolink_interval": "15s",
-    "backoff_initial": "10s",
-    "backoff_max": "10m"
-  }
-}
-`
 	if dir := filepath.Dir(path); dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile(path, []byte(tmpl), 0o600); err != nil {
+	if err := os.WriteFile(path, templateData, 0o600); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o600)
@@ -174,13 +177,21 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
-// Validate 做最基本的一致性检查。
+// Validate 做最基本的一致性检查。service 为空时由 ApplyDefaults
+// 设置为“校园网”，因此不是必填字段。
 func (c *Config) Validate() error {
-	if c.Username == "" {
-		return fmt.Errorf("config: username is required")
+	var missing []string
+	if strings.TrimSpace(c.Username) == "" {
+		missing = append(missing, "username")
 	}
 	if c.Password == "" {
-		return fmt.Errorf("config: password is required (daemon 模式用它续期 TGC)")
+		missing = append(missing, "password")
+	}
+	if strings.TrimSpace(c.Service) == "" {
+		missing = append(missing, "service")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("config: %s required", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -211,12 +222,30 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// LoadOptional 与 Load 相同，但配置文件不存在时返回仅含默认值的配置
-// （供 status/logout 等无需凭据的命令使用）。存在但解析失败仍报错。
+// LoadOptional 与 Load 相同，但配置文件不存在时返回仅含默认值的配置。
+// path 为空时使用 daemon 的默认查找顺序；交互式 CLI 使用 LoadOptionalCLI。
+// 存在但解析失败仍报错。
 func LoadOptional(path string) (*Config, error) {
 	c, err := Load(path)
 	if err != nil && IsNotExist(err) {
 		c = &Config{path: ResolvePath(path)}
+		c.ApplyDefaults()
+		return c, nil
+	}
+	return c, err
+}
+
+// LoadOptionalCLI 与 LoadOptional 相同，但交互式 CLI 的隐式查找
+// 不读取系统级配置，避免 0600 root:root 的 /etc 配置阻塞普通用户。
+// 显式 -config 仍然严格按指定路径读取。
+func LoadOptionalCLI(path string) (*Config, error) {
+	if path != "" {
+		return LoadOptional(path)
+	}
+	resolved := ResolveCLIPath("")
+	c, err := Load(resolved)
+	if err != nil && IsNotExist(err) {
+		c = &Config{path: resolved}
 		c.ApplyDefaults()
 		return c, nil
 	}
