@@ -88,12 +88,18 @@ ysunethelper -config /path/to/config.json login
     "probe_timeout": "5s",
     "nolink_interval": "15s",
     "backoff_initial": "10s",
-    "backoff_max": "10m"
+    "backoff_max": "10m",
+    "no_auth_period": {
+      "enabled": false,
+      "weekdays": [0, 1, 2, 3, 4],
+      "start": "23:30",
+      "end": "05:30"
+    }
   }
 }
 ```
 
-`service` 支持 `campus`、`unicom`、`telecom`、`mobile` 或服务中文名；省略时默认为校园网。时间值使用如 `30s`、`5m` 的格式。
+`service` 支持 `campus`、`unicom`、`telecom`、`mobile` 或服务中文名；省略时默认为校园网。间隔及超时时长使用如 `30s`、`5m` 的格式；禁认证时段使用 `HH:MM`。
 
 | 字段 | 说明 |
 |---|---|
@@ -108,6 +114,20 @@ ysunethelper -config /path/to/config.json login
 完全找不到配置文件时，`daemon` 会在当前目录生成 `ysunethelper.json` 模板，权限为 `0600`。
 
 配置文件包含密码，请勿设置为其他用户可读，也不要提交到公共仓库。
+
+### 禁认证时段（可选）
+
+部分区域在周日～周四晚 23:30 至次日 05:30 不允许认证。默认关闭此策略；需要时将 `daemon.no_auth_period.enabled` 改为 `true`，保存配置并重启 daemon。
+
+| 字段 | 说明 |
+|---|---|
+| `enabled` | 默认 `false`；省略整个配置块也不会启用。 |
+| `weekdays` | 时段**开始日**，`0` 为周日，`1`～`6` 为周一～周六；默认 `[0, 1, 2, 3, 4]`。启用时不能为空。 |
+| `start` / `end` | 北京时间，严格使用 `HH:MM`，默认 `23:30` / `05:30`。结束早于开始表示跨日，也支持同日时段；两者不能相同。 |
+
+时段包含开始时刻、不包含结束时刻。例如周四 23:30～周五 05:30 生效，周五和周六晚上不生效，周日凌晨也不生效。
+
+此策略仅影响 `daemon`。
 
 ## 构建
 

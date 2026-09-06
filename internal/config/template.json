@@ -9,6 +9,12 @@
     "probe_timeout": "5s",
     "nolink_interval": "15s",
     "backoff_initial": "10s",
-    "backoff_max": "10m"
+    "backoff_max": "10m",
+    "no_auth_period": {
+      "enabled": false,
+      "weekdays": [0, 1, 2, 3, 4],
+      "start": "23:30",
+      "end": "05:30"
+    }
   }
 }

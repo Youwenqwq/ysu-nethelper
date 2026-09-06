@@ -54,6 +54,8 @@ type DaemonConfig struct {
 	BackoffInitial Duration `json:"backoff_initial"`
 	// BackoffMax 退避上限，默认 10m。
 	BackoffMax Duration `json:"backoff_max"`
+	// NoAuthPeriod 禁认证时段；默认禁用，仅影响 daemon。
+	NoAuthPeriod NoAuthPeriod `json:"no_auth_period"`
 }
 
 // Config 是顶层配置。
@@ -175,6 +177,15 @@ func (c *Config) ApplyDefaults() {
 	if d.BackoffMax == 0 {
 		d.BackoffMax = Duration(10 * time.Minute)
 	}
+	if d.NoAuthPeriod.Weekdays == nil {
+		d.NoAuthPeriod.Weekdays = []int{0, 1, 2, 3, 4}
+	}
+	if d.NoAuthPeriod.Start == "" {
+		d.NoAuthPeriod.Start = "23:30"
+	}
+	if d.NoAuthPeriod.End == "" {
+		d.NoAuthPeriod.End = "05:30"
+	}
 }
 
 // Validate 做最基本的一致性检查。service 为空时由 ApplyDefaults
@@ -193,7 +204,7 @@ func (c *Config) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("config: %s required", strings.Join(missing, ", "))
 	}
-	return nil
+	return c.Daemon.NoAuthPeriod.validate()
 }
 
 // Path 返回配置文件路径。

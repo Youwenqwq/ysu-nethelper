@@ -8,6 +8,7 @@
 //	  portal 不可达                    → NO_LINK（不在校园网），短间隔重试
 //	  portal 说 online（假死）          → 先 offline 再强制重认证
 //	  portal 说 offline（真掉线）       → 直接重认证
+//	禁认证时段内暂停整条判定链，不主动登出；结束后重新探测。
 //
 // 重认证 = 确保 CAS TGC 有效（失效则用配置里的账密重新登录并持久化）
 // 再走 CAS → ePortal 委托认证。认证成功但探针仍不通视为上游故障，
@@ -33,11 +34,12 @@ import (
 type State string
 
 const (
-	StateInit    State = "INIT"
-	StateOnline  State = "ONLINE"
-	StateOffline State = "OFFLINE"
-	StateNoLink  State = "NO_LINK"
-	StateBackoff State = "BACKOFF"
+	StateInit       State = "INIT"
+	StateOnline     State = "ONLINE"
+	StateOffline    State = "OFFLINE"
+	StateNoLink     State = "NO_LINK"
+	StateBackoff    State = "BACKOFF"
+	StateAuthPaused State = "AUTH_PAUSED"
 )
 
 // Daemon 编排探针、CAS 与 ePortal 客户端。
@@ -117,6 +119,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 // tick 执行一轮判定链，并睡到下一轮。
 func (d *Daemon) tick(ctx context.Context) {
+	if d.pauseAuthentication(ctx) {
+		return
+	}
+
 	// 1. Internet 探针：通则在线，慢速轮询
 	if d.prober.Online(ctx) {
 		d.setState(StateOnline)
@@ -129,6 +135,9 @@ func (d *Daemon) tick(ctx context.Context) {
 	// 2. 防抖：连续确认 N 次都失败才动作
 	if !d.confirmOffline(ctx) {
 		return // 确认期间探针恢复，本轮结束（下一轮重新判定）
+	}
+	if d.pauseAuthentication(ctx) {
+		return
 	}
 
 	// 3. 查 portal 状态，区分假死/真掉线/不在校园网
@@ -144,6 +153,10 @@ func (d *Daemon) tick(ctx context.Context) {
 		d.sleepBackoff(ctx)
 		return
 	}
+	// 查询可能跨过时段边界，必须在主动下线前再次检查。
+	if d.pauseAuthentication(ctx) {
+		return
+	}
 	d.setState(StateOffline)
 	if status.Online {
 		// 假死：portal 认为在线但 Internet 不通，先下线再强制重认证
@@ -157,6 +170,9 @@ func (d *Daemon) tick(ctx context.Context) {
 	}
 
 	// 4. 认证
+	if d.pauseAuthentication(ctx) {
+		return
+	}
 	_, err = Authenticate(ctx, d.cfg, d.cas, d.portal)
 	if err != nil {
 		d.handleAuthError(ctx, err)
@@ -165,6 +181,9 @@ func (d *Daemon) tick(ctx context.Context) {
 	d.log.Info("认证流程完成，验证 Internet 连通性")
 
 	// 5. 认证后验证：仍不通则是上游故障，长退避防 logout/login 死循环
+	if d.pauseAuthentication(ctx) {
+		return
+	}
 	if d.prober.Online(ctx) {
 		d.setState(StateOnline)
 		d.backoff = d.cfg.Daemon.BackoffInitial.D()
@@ -193,6 +212,9 @@ func (d *Daemon) confirmOffline(ctx context.Context) bool {
 	}
 	for i := 1; i < confirm; i++ {
 		if !d.sleep(ctx, d.cfg.Daemon.ProbeConfirmGap.D()) {
+			return false
+		}
+		if d.pauseAuthentication(ctx) {
 			return false
 		}
 		if d.prober.Online(ctx) {
@@ -251,10 +273,43 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
+// pauseAuthentication 在禁认证时段等待，不给固定结束时间添加抖动。
+// 已经发出的请求不撤回；每个后续判定步骤开始前会重新检查。
+func (d *Daemon) pauseAuthentication(ctx context.Context) bool {
+	now := time.Now()
+	start, end := d.cfg.Daemon.NoAuthPeriod.NextWindow(now)
+	if start.IsZero() || now.Before(start) {
+		if d.state == StateAuthPaused {
+			d.log.Info("禁认证时段结束，恢复自动检测")
+			d.setState(StateInit)
+		}
+		return false
+	}
+	if d.state != StateAuthPaused {
+		d.setState(StateAuthPaused)
+		d.log.Info("禁认证时段，暂停自动探测、登出和认证", "until", end.Format(time.RFC3339))
+	}
+	d.backoff = d.cfg.Daemon.BackoffInitial.D()
+	d.postAuthFails = 0
+	wait(ctx, end.Sub(now))
+	return true
+}
+
 // sleep 带 ±20% 抖动睡眠；ctx 取消时返回 false。
 func (d *Daemon) sleep(ctx context.Context, dur time.Duration) bool {
 	jitter := time.Duration((rand.Float64()*0.4 - 0.2) * float64(dur))
-	timer := time.NewTimer(dur + jitter)
+	delay := dur + jitter
+	now := time.Now()
+	start, _ := d.cfg.Daemon.NoAuthPeriod.NextWindow(now)
+	if !start.IsZero() {
+		// 不让退避或探测间隔跨过禁认证时段；下一轮会按固定结束时间等待。
+		delay = minDuration(delay, max(time.Duration(0), start.Sub(now)))
+	}
+	return wait(ctx, delay)
+}
+
+func wait(ctx context.Context, dur time.Duration) bool {
+	timer := time.NewTimer(dur)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
