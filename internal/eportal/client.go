@@ -79,11 +79,15 @@ func (c *Client) GetStatus(ctx context.Context) (*OnlineStatus, error) {
 		return status, err
 	}
 
-	// getOnlineUserInfo 只提供学工号（userName）。真实姓名由账户信息接口
-	// 返回，且同样依赖本次 portal 流程的 sessionId。
-	status.Name, err = c.queryAccountName(ctx, info["sessionId"])
+	// getOnlineUserInfo 只提供学工号（userName）。真实姓名和校园网剩余流量
+	// 由账户信息接口返回，且同样依赖本次 portal 流程的 sessionId。
+	status.Account, err = c.queryAccountInfo(ctx, info["sessionId"])
 	if err != nil {
 		return nil, err
+	}
+	status.Name = stringField(status.Account, "name")
+	if status.Service == ServiceAliases["campus"] {
+		status.RemainingTraffic = accountInfoContent(status.Account, "剩余流量")
 	}
 	return status, nil
 }
@@ -299,20 +303,39 @@ func (c *Client) queryStatus(ctx context.Context, sessionID string) (*OnlineStat
 	}, nil
 }
 
-// queryAccountName 查询当前认证账户的真实姓名。该接口的响应 data 中包含
-// name；不要从 getOnlineUserInfo 的 userName 推断，它在燕大 portal 中是学工号。
-func (c *Client) queryAccountName(ctx context.Context, sessionID string) (string, error) {
+// queryAccountInfo 查询当前认证账户的完整账户信息。该接口的响应 data 中
+// 包含姓名、套餐/余额、剩余流量、在线设备等字段。
+func (c *Client) queryAccountInfo(ctx context.Context, sessionID string) (map[string]any, error) {
 	data, err := c.postJSON(ctx, accountInfoURL, map[string]string{"sessionId": sessionID})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var account struct {
-		Name string `json:"name"`
-	}
+	var account map[string]any
 	if err := json.Unmarshal(data, &account); err != nil {
-		return "", fmt.Errorf("%w: bad getAccountInfo data: %v", ErrProtocol, err)
+		return nil, fmt.Errorf("%w: bad getAccountInfo data: %v", ErrProtocol, err)
 	}
-	return account.Name, nil
+	if account == nil {
+		return nil, fmt.Errorf("%w: getAccountInfo data is not an object", ErrProtocol)
+	}
+	return account, nil
+}
+
+func stringField(object map[string]any, key string) string {
+	value, _ := object[key].(string)
+	return value
+}
+
+// accountInfoContent 按服务端显示标题读取 accountInfo 条目的内容。
+// content 保持服务端格式（例如 "28.1GB" 或“不限量”），避免丢失单位和语义。
+func accountInfoContent(account map[string]any, title string) string {
+	items, _ := account["accountInfo"].([]any)
+	for _, item := range items {
+		fields, _ := item.(map[string]any)
+		if stringField(fields, "title") == title {
+			return stringField(fields, "content")
+		}
+	}
+	return ""
 }
 
 // casSSOLoginURL 构造携带流程会话参数的 cas-sso 登录页 URL。

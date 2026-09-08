@@ -25,17 +25,41 @@ deploy/ 下也放置了一个 initd 模板，可按需手动配置使用。
 ## 使用
 
 ```sh
-ysunethelper [-config path] status
+ysunethelper [-config path] status [-v] [-test]
 ysunethelper [-config path] login [-u username] [-p password] [-s service]
+ysunethelper [-config path] logout
 ysunethelper [-config path] daemon
-ysunethelper -v ...
+ysunethelper -h
 ```
 
-查询状态：
+全局选项 `-config` 和 `-v` 必须放在命令之前。`status`、`login` 的命令选项放在命令之后；运行 `ysunethelper <命令> -h` 可查看对应帮助。
 
-```sh
-ysunethelper status
+### 查询状态
+
+| 命令 | 行为 |
+|---|---|
+| `ysunethelper status` | 显示姓名、学号、IP、存在时的 MAC、运营商，以及校园网剩余流量 |
+| `ysunethelper status -v` | 显示完整状态，包括账户信息和 Portal 返回的全部原始字段 |
+| `ysunethelper status -test` | 显示简明状态，并执行 Internet 连通性检测 |
+| `ysunethelper status -v -test` | 显示完整状态，并执行 Internet 连通性检测 |
+
+剩余流量仅在运营商为“校园网”时显示，并保持上游返回的格式，例如 `28.1GB`。
+`status` 默认不会执行 Internet 连通性检测，只有显式指定 `-test` 才会发起探针请求。
+
+默认输出示例：
+
+```json
+{
+  "online": true,
+  "name": "张三",
+  "username": "202400114514",
+  "user_ip": "10.0.0.2",
+  "service": "校园网",
+  "remaining_traffic": "28.1GB"
+}
 ```
+
+### 登录与登出
 
 登录时不指定账号密码，程序会在需要时从终端交互询问：
 
@@ -43,7 +67,7 @@ ysunethelper status
 ysunethelper login
 ```
 
-也可以临时指定账号、密码和网络服务：
+也可以临时指定账号、密码和网络服务（不会写入配置文件）：
 
 ```sh
 ysunethelper login -u 202400114514 -p 'your-password' -s campus
@@ -57,7 +81,7 @@ ysunethelper login -u 202400114514 -p 'your-password' -s campus
 ysunethelper logout
 ```
 
-命令行密码可能被本机其他用户通过进程列表看到，长期使用建议写入配置文件。
+命令行密码可能被本机其他用户通过进程列表看到，长期使用建议写入权限为 0600 的配置文件。
 
 ## 配置
 
