@@ -2,7 +2,9 @@
 //
 // 用法：
 //
-//	ysunethelper [-config path] status    查询 portal 在线状态与 Internet 连通性
+//	ysunethelper [-config path] status [-v] [-test]
+//	                                      查询 portal 在线状态；-v 显示完整信息，
+//	                                      -test 额外检测 Internet 连通性
 //	ysunethelper [-config path] login [-u username] [-p password] [-s service]
 //	                                      认证上线（CAS → ePortal；TGC 失效且无
 //	                                      配置账密时交互式询问）
@@ -36,11 +38,21 @@ import (
 func main() {
 	fs := flag.NewFlagSet("ysunethelper", flag.ExitOnError)
 	configPath := fs.String("config", "", "配置文件路径（默认依次尝试 ./ysunethelper.json、~/.config/ysunethelper/config.json、/etc/ysunethelper/config.json）")
-	verbose := fs.Bool("v", false, "debug 级日志")
+	verbose := fs.Bool("v", false, "详细输出；daemon 下启用 debug 级日志")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: ysunethelper [-config path] [-v] <status|login|logout|daemon>\n\n")
-		fmt.Fprintln(os.Stderr, "login: ysunethelper login [-u username] [-p password] [-s service]")
+		fmt.Fprintln(os.Stderr, "燕山大学校园网认证助手")
+		fmt.Fprintln(os.Stderr, "\n用法:")
+		fmt.Fprintln(os.Stderr, "  ysunethelper [全局选项] <命令> [命令选项]")
+		fmt.Fprintln(os.Stderr, "\n命令:")
+		fmt.Fprintln(os.Stderr, "  status [-v] [-test]                         查询 Portal 在线状态和账户信息")
+		fmt.Fprintln(os.Stderr, "    默认显示姓名、学号、IP、MAC（如有）、运营商和校园网剩余流量")
+		fmt.Fprintln(os.Stderr, "    -v 显示完整账户及 Portal 原始字段；-test 额外执行 Internet 连通性检测")
+		fmt.Fprintln(os.Stderr, "  login [-u 用户名] [-p 密码] [-s 运营商]      登录校园网")
+		fmt.Fprintln(os.Stderr, "  logout                                      登出当前设备")
+		fmt.Fprintln(os.Stderr, "  daemon                                      前台运行在线守护进程")
+		fmt.Fprintln(os.Stderr, "\n全局选项（必须放在命令之前）:")
 		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, "\n使用 ysunethelper <命令> -h 查看命令选项。")
 	}
 	_ = fs.Parse(os.Args[1:])
 	args := fs.Args()
@@ -56,12 +68,12 @@ func main() {
 
 	switch cmd {
 	case "status":
-		ensureNoCommandArgs(cmd, cmdArgs)
+		statusVerbose, testConnectivity := parseStatusArgs(cmdArgs)
 		cfg, err := config.LoadOptional(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdStatus(ctx, cfg)
+		cmdStatus(ctx, cfg, *verbose || statusVerbose, testConnectivity)
 	case "logout":
 		ensureNoCommandArgs(cmd, cmdArgs)
 		cfg, err := config.LoadOptional(*configPath)
@@ -104,6 +116,28 @@ func main() {
 	}
 }
 
+// parseStatusArgs 解析 status 的显示和连通性检测选项。
+func parseStatusArgs(args []string) (verbose, testConnectivity bool) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	fs.BoolVar(&verbose, "v", false, "显示完整 portal 和账户信息")
+	fs.BoolVar(&verbose, "verbose", false, "显示完整 portal 和账户信息")
+	fs.BoolVar(&testConnectivity, "test", false, "额外检测 Internet 连通性")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper status [-v] [-test]")
+		fmt.Fprintln(os.Stderr, "\n查询当前设备的 Portal 在线状态和账户信息。")
+		fmt.Fprintln(os.Stderr, "默认只显示姓名、学号、IP、MAC（如有）、运营商和校园网剩余流量；不执行 Internet 连通性检测。")
+		fmt.Fprintln(os.Stderr, "\n选项:")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	return verbose, testConnectivity
+}
+
 // parseLoginArgs 解析 login 子命令的参数。它们仅影响本次登录，不会改写配置文件。
 func parseLoginArgs(args []string) (username, password, service string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
@@ -115,7 +149,9 @@ func parseLoginArgs(args []string) (username, password, service string) {
 	fs.StringVar(&service, "s", "", "网络服务名（campus/unicom/telecom/mobile 或服务全名）")
 	fs.StringVar(&service, "service", "", "网络服务名（campus/unicom/telecom/mobile 或服务全名）")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: ysunethelper login [-u username] [-p password] [-s service]")
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper login [-u 用户名] [-p 密码] [-s 运营商]")
+		fmt.Fprintln(os.Stderr, "\n通过统一身份认证登录校园网。本次传入的参数不会写入配置文件。")
+		fmt.Fprintln(os.Stderr, "\n选项:")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
@@ -130,10 +166,21 @@ func ensureNoCommandArgs(cmd string, args []string) {
 	if len(args) == 0 {
 		return
 	}
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		switch cmd {
+		case "logout":
+			fmt.Fprintln(os.Stderr, "用法: ysunethelper logout")
+			fmt.Fprintln(os.Stderr, "\n登出当前设备；设备已经离线时不执行额外操作。")
+		case "daemon":
+			fmt.Fprintln(os.Stderr, "用法: ysunethelper [-v] daemon")
+			fmt.Fprintln(os.Stderr, "\n前台运行在线守护进程；使用命令前的全局 -v 输出 debug 级日志。")
+		}
+		os.Exit(0)
+	}
 	fatal("%s 不接受额外参数: %v", cmd, args)
 }
 
-func cmdStatus(ctx context.Context, cfg *config.Config) {
+func cmdStatus(ctx context.Context, cfg *config.Config, verbose, testConnectivity bool) {
 	_, portalClient, err := authd.NewClients(cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -142,9 +189,30 @@ func cmdStatus(ctx context.Context, cfg *config.Config) {
 	if err != nil {
 		fatal("查询 portal 状态失败: %v", err)
 	}
-	out, _ := json.MarshalIndent(st, "", "  ")
+	var value any = struct {
+		Name             string `json:"name"`
+		Username         string `json:"username"`
+		UserIP           string `json:"user_ip"`
+		UserMAC          string `json:"user_mac,omitempty"`
+		Service          string `json:"service"`
+		RemainingTraffic string `json:"remaining_traffic,omitempty"`
+	}{
+		Name:             st.Name,
+		Username:         st.Username,
+		UserIP:           st.UserIP,
+		UserMAC:          st.UserMAC,
+		Service:          st.Service,
+		RemainingTraffic: st.RemainingTraffic,
+	}
+	if verbose {
+		value = st
+	}
+	out, _ := json.MarshalIndent(value, "", "  ")
 	fmt.Println(string(out))
 
+	if !testConnectivity {
+		return
+	}
 	p := probe.New(cfg.Daemon.ProbeURLs, cfg.Daemon.ProbeTimeout.D())
 	for _, r := range p.Check(ctx) {
 		mark := "FAIL"

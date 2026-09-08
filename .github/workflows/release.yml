@@ -119,7 +119,9 @@ jobs:
           set -euo pipefail
           base="ysunethelper_${VERSION}_linux_${OUTPUT}"
           binary="dist/${base}"
-          test -x "$binary"
+          # upload-artifact/download-artifact does not preserve executable bits.
+          # install below restores mode 0755, so validate the payload itself here.
+          test -s "$binary"
           root="${RUNNER_TEMP}/package-root"
           rm -rf "$root"
           mkdir -p "$root/usr/local/bin" "$root/lib/systemd/system"
@@ -154,7 +156,8 @@ jobs:
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
-          name: ysunethelper-linux-packages
+          # Artifact names must be unique across matrix jobs.
+          name: ysunethelper-linux-packages-${{ matrix.output }}
           path: |
             dist/*.deb
             dist/*.rpm
@@ -202,8 +205,18 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t release_files < <(find . -maxdepth 1 -type f -printf '%f\n' | sort)
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            "${release_files[@]}"
+          ((${#release_files[@]} > 0))
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A force-updated tag may already have a release. Replace its assets
+            # so rerunning this workflow publishes the newly built files.
+            gh release upload "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber \
+              "${release_files[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              "${release_files[@]}"
+          fi

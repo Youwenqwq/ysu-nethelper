@@ -95,12 +95,41 @@ http://connectivitycheck.gstatic.com/generate_204
 ## 使用
 
 ```sh
-ysunethelper [-config path] status
+ysunethelper [-config path] status [-v] [-test]
 ysunethelper [-config path] login [-u username] [-p password] [-s service]
 ysunethelper [-config path] logout
 ysunethelper [-config path] daemon
-ysunethelper -v ...
+ysunethelper -h
 ```
+
+全局选项 `-config` 和 `-v` 必须放在命令之前。`status`、`login` 的命令选项放在
+命令之后；运行 `ysunethelper <命令> -h` 可查看对应帮助。
+
+### 查询状态
+
+| 命令 | 行为 |
+|---|---|
+| `ysunethelper status` | 显示姓名、学号、IP、存在时的 MAC、运营商，以及校园网剩余流量 |
+| `ysunethelper status -v` | 显示完整状态，包括账户信息和 Portal 返回的全部原始字段 |
+| `ysunethelper status -test` | 显示简明状态，并执行 Internet 连通性检测 |
+| `ysunethelper status -v -test` | 显示完整状态，并执行 Internet 连通性检测 |
+
+剩余流量仅在运营商为“校园网”时显示，并保持上游返回的格式，例如 `28.1GB`。
+`status` 默认不会执行 Internet 连通性检测，只有显式指定 `-test` 才会发起探针请求。
+
+默认输出示例：
+
+```json
+{
+  "name": "张三",
+  "username": "202400114514",
+  "user_ip": "10.0.0.2",
+  "service": "校园网",
+  "remaining_traffic": "28.1GB"
+}
+```
+
+### 登录与登出
 
 临时指定账号密码登录（不会写入配置文件）：
 

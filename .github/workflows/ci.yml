@@ -37,4 +37,4 @@ jobs:
         run: go test ./...
 
       - name: Smoke test
-        run: ./ysunethelper 2>&1 | grep -q "^usage:"
+        run: ./ysunethelper -h 2>&1 | grep -q "^燕山大学校园网认证助手$"
