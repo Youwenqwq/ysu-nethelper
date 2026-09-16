@@ -25,16 +25,16 @@ deploy/ 下也放置了一个 initd 模板，可按需手动配置使用。
 ## 使用
 
 ```sh
-ysunethelper [-config path] status [-v] [-test]
-ysunethelper [-config path] login [-u username] [-p password] [-s service]
-ysunethelper [-config path] logout
-ysunethelper [-config path] devices [-v]
-ysunethelper [-config path] kick <序号|UUID>...
+ysunethelper [-config path] status [-v] [-test] [--json]
+ysunethelper [-config path] login [-u username] [-p password] [-s service] [--json]
+ysunethelper [-config path] logout [--json]
+ysunethelper [-config path] devices [--json]
+ysunethelper [-config path] kick [--json] <序号|UUID>...
 ysunethelper [-config path] daemon
 ysunethelper -h
 ```
 
-全局选项 `-config` 和 `-v` 必须放在命令之前。`status`、`login` 的命令选项放在命令之后；运行 `ysunethelper <命令> -h` 可查看对应帮助。
+全局选项 `-config` 和 `-v` 必须放在命令之前。`status`、`login`、`logout`、`devices`、`kick` 的命令选项放在命令之后；运行 `ysunethelper <命令> -h` 可查看对应帮助。
 
 ### 查询状态
 
@@ -42,6 +42,7 @@ ysunethelper -h
 |---|---|
 | `ysunethelper status` | 显示姓名、学号、IP、存在时的 MAC、运营商，以及校园网剩余流量 |
 | `ysunethelper status -v` | 显示完整状态，包括账户信息和 Portal 返回的全部原始字段 |
+| `ysunethelper status --json` | 以 JSON 输出简明状态，供脚本解析（可与 `-v` 组合输出完整字段） |
 | `ysunethelper status -test` | 显示简明状态，并执行 Internet 连通性检测 |
 | `ysunethelper status -v -test` | 显示完整状态，并执行 Internet 连通性检测 |
 
@@ -49,6 +50,17 @@ ysunethelper -h
 `status` 默认不会执行 Internet 连通性检测，只有显式指定 `-test` 才会发起探针请求。
 
 默认输出示例：
+
+```text
+在线状态: 在线
+姓名: 张三
+学工号: 202400114514
+IP: 10.0.0.2
+运营商: 校园网
+剩余流量: 28.1GB
+```
+
+`--json` 输出示例：
 
 ```json
 {
@@ -76,6 +88,7 @@ ysunethelper login -u 202400114514 -p 'your-password' -s campus
 ```
 
 支持的服务别名：`campus`（校园网）、`unicom`（中国联通）、`telecom`（中国电信）、`mobile`（中国移动）。也可以填写服务全名。
+传入 `--json` 时登录结果以 JSON 输出（含 `ok`、`username`、`name`、`service`、`user_ip`、`user_mac` 字段）。
 
 登出：
 
@@ -91,12 +104,20 @@ ysunethelper logout
 ysunethelper devices
 ```
 
+传入 `--json` 输出接口原始数据，供脚本解析：
+
+```sh
+ysunethelper devices --json
+```
+
 下线指定设备，目标为 `devices` 输出中的序号（1 起）或 UUID，可一次多个：
 
 ```sh
 ysunethelper kick 2
 ysunethelper kick 44484b32a082306001a0a8b4470c6b39
 ```
+
+`logout` 和 `kick` 同样支持 `--json`：`logout --json` 输出 `{"ok": true}`；`kick --json` 输出 `ok` 和被下线设备的结构化列表（`kicked` 数组）。
 
 命令行密码可能被本机其他用户通过进程列表看到，长期使用建议写入权限为 0600 的配置文件。
 

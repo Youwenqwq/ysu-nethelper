@@ -2,16 +2,18 @@
 //
 // 用法：
 //
-//	ysunethelper [-config path] status [-v] [-test]
+//	ysunethelper [-config path] status [-v] [-test] [--json]
 //	                                      查询 portal 在线状态；-v 显示完整信息，
-//	                                      -test 额外检测 Internet 连通性
-//	ysunethelper [-config path] login [-u username] [-p password] [-s service]
+//	                                      -test 额外检测 Internet 连通性，
+//	                                      --json 以 JSON 输出
+//	ysunethelper [-config path] login [-u username] [-p password] [-s service] [--json]
 //	                                      认证上线（CAS → ePortal；TGC 失效且无
 //	                                      配置账密时交互式询问）
-//	ysunethelper [-config path] logout    登出下线
-//	ysunethelper [-config path] devices [-v]
+//	ysunethelper [-config path] logout [--json]
+//	                                      登出下线
+//	ysunethelper [-config path] devices [--json]
 //	                                      查询账号当前在线设备（自助服务）
-//	ysunethelper [-config path] kick <序号|UUID>...
+//	ysunethelper [-config path] kick [--json] <序号|UUID>...
 //	                                      下线指定在线设备（序号见 devices 输出）
 //	ysunethelper [-config path] daemon    Daemon 模式：自动保持在线（前台运行，
 //	                                      由 systemd/OpenRC 托管）
@@ -40,6 +42,7 @@ import (
 	"ysunethelper/internal/authd"
 	"ysunethelper/internal/cas"
 	"ysunethelper/internal/config"
+	"ysunethelper/internal/eportal"
 	"ysunethelper/internal/logx"
 	"ysunethelper/internal/probe"
 	"ysunethelper/internal/prompt"
@@ -57,13 +60,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "\n用法:")
 		fmt.Fprintln(os.Stderr, "  ysunethelper [全局选项] <命令> [命令选项]")
 		fmt.Fprintln(os.Stderr, "\n命令:")
-		fmt.Fprintln(os.Stderr, "  status [-v] [-test]                         查询 Portal 在线状态和账户信息")
-		fmt.Fprintln(os.Stderr, "    默认显示姓名、学号、IP、MAC（如有）、运营商和校园网剩余流量")
+		fmt.Fprintln(os.Stderr, "  status [-v] [-test] [--json]              查询 Portal 在线状态和账户信息")
 		fmt.Fprintln(os.Stderr, "    -v 显示完整账户及 Portal 原始字段；-test 额外执行 Internet 连通性检测")
-		fmt.Fprintln(os.Stderr, "  login [-u 用户名] [-p 密码] [-s 运营商]      登录校园网")
-		fmt.Fprintln(os.Stderr, "  logout                                      登出当前设备")
-		fmt.Fprintln(os.Stderr, "  devices                                     查询账号当前在线设备")
-		fmt.Fprintln(os.Stderr, "  kick <序号|UUID>...                          下线指定在线设备（序号见 devices 输出）")
+		fmt.Fprintln(os.Stderr, "  login [-u 用户名] [-p 密码] [-s 运营商] [--json]")
+		fmt.Fprintln(os.Stderr, "                                              登录校园网")
+		fmt.Fprintln(os.Stderr, "  logout [--json]                             登出当前设备")
+		fmt.Fprintln(os.Stderr, "  devices [--json]                            查询账号当前在线设备")
+		fmt.Fprintln(os.Stderr, "  kick [--json] <序号|UUID>...                 下线指定在线设备")
 		fmt.Fprintln(os.Stderr, "  daemon                                      前台运行在线守护进程")
 		fmt.Fprintln(os.Stderr, "\n全局选项（必须放在命令之前）:")
 		fs.PrintDefaults()
@@ -84,40 +87,40 @@ func main() {
 
 	switch cmd {
 	case "status":
-		statusVerbose, testConnectivity := parseStatusArgs(cmdArgs)
+		statusVerbose, testConnectivity, jsonOut := parseStatusArgs(cmdArgs)
 		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdStatus(ctx, cfg, *verbose || statusVerbose, testConnectivity)
+		cmdStatus(ctx, cfg, *verbose || statusVerbose, testConnectivity, jsonOut)
 	case "logout":
-		ensureNoCommandArgs(cmd, cmdArgs)
+		jsonOut := parseLogoutArgs(cmdArgs)
 		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdLogout(ctx, cfg)
+		cmdLogout(ctx, cfg, jsonOut)
 	case "login":
-		username, password, service := parseLoginArgs(cmdArgs)
+		username, password, service, jsonOut := parseLoginArgs(cmdArgs)
 		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdLogin(ctx, cfg, username, password, service)
+		cmdLogin(ctx, cfg, username, password, service, jsonOut)
 	case "devices":
-		parseDevicesArgs(cmdArgs)
+		jsonOut := parseDevicesArgs(cmdArgs)
 		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdDevices(ctx, cfg, *verbose)
+		cmdDevices(ctx, cfg, jsonOut)
 	case "kick":
-		targets := parseKickArgs(cmdArgs)
+		targets, jsonOut := parseKickArgs(cmdArgs)
 		cfg, err := config.LoadOptionalCLI(*configPath)
 		if err != nil {
 			fatal("加载配置失败: %v", err)
 		}
-		cmdKick(ctx, cfg, targets)
+		cmdKick(ctx, cfg, targets, jsonOut)
 	case "daemon":
 		ensureNoCommandArgs(cmd, cmdArgs)
 		cfg, err := config.Load(*configPath)
@@ -146,15 +149,16 @@ func main() {
 	}
 }
 
-// parseStatusArgs 解析 status 的显示和连通性检测选项。
-func parseStatusArgs(args []string) (verbose, testConnectivity bool) {
+// parseStatusArgs 解析 status 的显示、输出格式和连通性检测选项。
+func parseStatusArgs(args []string) (verbose, testConnectivity, jsonOut bool) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	fs.BoolVar(&verbose, "v", false, "显示完整 portal 和账户信息")
 	fs.BoolVar(&verbose, "verbose", false, "显示完整 portal 和账户信息")
 	fs.BoolVar(&testConnectivity, "test", false, "额外检测 Internet 连通性")
+	fs.BoolVar(&jsonOut, "json", false, "以 JSON 输出")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: ysunethelper status [-v] [-test]")
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper status [-v] [-test] [--json]")
 		fmt.Fprintln(os.Stderr, "\n查询当前设备的 Portal 在线状态和账户信息。")
 		fmt.Fprintln(os.Stderr, "默认只显示姓名、学号、IP、MAC（如有）、运营商和校园网剩余流量；不执行 Internet 连通性检测。")
 		fmt.Fprintln(os.Stderr, "\n选项:")
@@ -165,11 +169,11 @@ func parseStatusArgs(args []string) (verbose, testConnectivity bool) {
 		fs.Usage()
 		os.Exit(2)
 	}
-	return verbose, testConnectivity
+	return verbose, testConnectivity, jsonOut
 }
 
 // parseLoginArgs 解析 login 子命令的参数。它们仅影响本次登录，不会改写配置文件。
-func parseLoginArgs(args []string) (username, password, service string) {
+func parseLoginArgs(args []string) (username, password, service string, jsonOut bool) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&username, "u", "", "统一身份认证用户名")
@@ -178,8 +182,9 @@ func parseLoginArgs(args []string) (username, password, service string) {
 	fs.StringVar(&password, "password", "", "统一身份认证密码")
 	fs.StringVar(&service, "s", "", "网络服务名（campus/unicom/telecom/mobile 或服务全名）")
 	fs.StringVar(&service, "service", "", "网络服务名（campus/unicom/telecom/mobile 或服务全名）")
+	fs.BoolVar(&jsonOut, "json", false, "以 JSON 输出登录结果")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: ysunethelper login [-u 用户名] [-p 密码] [-s 运营商]")
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper login [-u 用户名] [-p 密码] [-s 运营商] [--json]")
 		fmt.Fprintln(os.Stderr, "\n通过统一身份认证登录校园网。本次传入的参数不会写入配置文件。")
 		fmt.Fprintln(os.Stderr, "\n选项:")
 		fs.PrintDefaults()
@@ -189,38 +194,64 @@ func parseLoginArgs(args []string) (username, password, service string) {
 		fs.Usage()
 		os.Exit(2)
 	}
-	return username, password, service
+	return username, password, service, jsonOut
 }
 
-// parseDevicesArgs 校验 devices 不带额外参数。
-func parseDevicesArgs(args []string) {
-	fs := flag.NewFlagSet("devices", flag.ExitOnError)
+// parseLogoutArgs 解析 logout 的输出格式选项，并校验不带位置参数。
+func parseLogoutArgs(args []string) (jsonOut bool) {
+	fs := flag.NewFlagSet("logout", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
+	fs.BoolVar(&jsonOut, "json", false, "以 JSON 输出登出结果")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: ysunethelper devices")
-		fmt.Fprintln(os.Stderr, "\n通过自助服务查询账号当前在线设备。全局 -v 输出接口原始数据。")
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper logout [--json]")
+		fmt.Fprintln(os.Stderr, "\n登出当前设备；设备已经离线时不执行额外操作。")
+		fmt.Fprintln(os.Stderr, "\n选项:")
+		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
 	if fs.NArg() != 0 {
 		fs.Usage()
 		os.Exit(2)
 	}
+	return jsonOut
 }
 
-// parseKickArgs 解析 kick 的目标列表（序号或 onlineUserUuid）。
-func parseKickArgs(args []string) []string {
+// parseDevicesArgs 解析 devices 的输出格式选项，并校验不带位置参数。
+func parseDevicesArgs(args []string) (jsonOut bool) {
+	fs := flag.NewFlagSet("devices", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	fs.BoolVar(&jsonOut, "json", false, "以 JSON 输出接口原始数据")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper devices [--json]")
+		fmt.Fprintln(os.Stderr, "\n通过自助服务查询账号当前在线设备。--json 输出接口原始数据。")
+		fmt.Fprintln(os.Stderr, "\n选项:")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	return jsonOut
+}
+
+// parseKickArgs 解析 kick 的目标列表（序号或 onlineUserUuid）和输出格式选项。
+func parseKickArgs(args []string) (targets []string, jsonOut bool) {
 	fs := flag.NewFlagSet("kick", flag.ExitOnError)
 	fs.SetOutput(os.Stderr)
+	fs.BoolVar(&jsonOut, "json", false, "以 JSON 输出下线结果")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "用法: ysunethelper kick <序号|UUID>...")
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper kick [--json] <序号|UUID>...")
 		fmt.Fprintln(os.Stderr, "\n下线账号的指定在线设备。目标为 devices 输出中的序号（1 起）或 UUID。")
+		fmt.Fprintln(os.Stderr, "\n选项:")
+		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
 	if fs.NArg() == 0 {
 		fs.Usage()
 		os.Exit(2)
 	}
-	return fs.Args()
+	return fs.Args(), jsonOut
 }
 
 func ensureNoCommandArgs(cmd string, args []string) {
@@ -228,11 +259,7 @@ func ensureNoCommandArgs(cmd string, args []string) {
 		return
 	}
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		switch cmd {
-		case "logout":
-			fmt.Fprintln(os.Stderr, "用法: ysunethelper logout")
-			fmt.Fprintln(os.Stderr, "\n登出当前设备；设备已经离线时不执行额外操作。")
-		case "daemon":
+		if cmd == "daemon" {
 			fmt.Fprintln(os.Stderr, "用法: ysunethelper [-v] daemon")
 			fmt.Fprintln(os.Stderr, "\n前台运行在线守护进程；使用命令前的全局 -v 输出 debug 级日志。")
 		}
@@ -241,7 +268,7 @@ func ensureNoCommandArgs(cmd string, args []string) {
 	fatal("%s 不接受额外参数: %v", cmd, args)
 }
 
-func cmdStatus(ctx context.Context, cfg *config.Config, verbose, testConnectivity bool) {
+func cmdStatus(ctx context.Context, cfg *config.Config, verbose, testConnectivity, jsonOut bool) {
 	_, portalClient, err := authd.NewClients(cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -250,28 +277,32 @@ func cmdStatus(ctx context.Context, cfg *config.Config, verbose, testConnectivit
 	if err != nil {
 		fatal("查询 portal 状态失败: %v", err)
 	}
-	var value any = struct {
-		Online           bool   `json:"online"`
-		Name             string `json:"name,omitempty"`
-		Username         string `json:"username,omitempty"`
-		UserIP           string `json:"user_ip,omitempty"`
-		UserMAC          string `json:"user_mac,omitempty"`
-		Service          string `json:"service,omitempty"`
-		RemainingTraffic string `json:"remaining_traffic,omitempty"`
-	}{
-		Online:           st.Online,
-		Name:             st.Name,
-		Username:         st.Username,
-		UserIP:           st.UserIP,
-		UserMAC:          st.UserMAC,
-		Service:          st.Service,
-		RemainingTraffic: st.RemainingTraffic,
+	if jsonOut {
+		var value any = struct {
+			Online           bool   `json:"online"`
+			Name             string `json:"name,omitempty"`
+			Username         string `json:"username,omitempty"`
+			UserIP           string `json:"user_ip,omitempty"`
+			UserMAC          string `json:"user_mac,omitempty"`
+			Service          string `json:"service,omitempty"`
+			RemainingTraffic string `json:"remaining_traffic,omitempty"`
+		}{
+			Online:           st.Online,
+			Name:             st.Name,
+			Username:         st.Username,
+			UserIP:           st.UserIP,
+			UserMAC:          st.UserMAC,
+			Service:          st.Service,
+			RemainingTraffic: st.RemainingTraffic,
+		}
+		if verbose {
+			value = st
+		}
+		out, _ := json.MarshalIndent(value, "", "  ")
+		fmt.Println(string(out))
+	} else {
+		printStatusHuman(st, verbose)
 	}
-	if verbose {
-		value = st
-	}
-	out, _ := json.MarshalIndent(value, "", "  ")
-	fmt.Println(string(out))
 
 	if !testConnectivity {
 		return
@@ -291,7 +322,49 @@ func cmdStatus(ctx context.Context, cfg *config.Config, verbose, testConnectivit
 	}
 }
 
-func cmdLogin(ctx context.Context, cfg *config.Config, username, password, service string) {
+// printStatusHuman 以人类友好的逐行格式输出在线状态；
+// verbose 时追加服务端消息、账户信息和 Portal 原始字段。
+func printStatusHuman(st *eportal.OnlineStatus, verbose bool) {
+	state := "离线"
+	if st.Online {
+		state = "在线"
+	}
+	fmt.Printf("在线状态: %s\n", state)
+	if st.Name != "" {
+		fmt.Printf("姓名: %s\n", st.Name)
+	}
+	if st.Username != "" {
+		fmt.Printf("学工号: %s\n", st.Username)
+	}
+	if st.UserIP != "" {
+		fmt.Printf("IP: %s\n", st.UserIP)
+	}
+	if st.UserMAC != "" {
+		fmt.Printf("MAC: %s\n", st.UserMAC)
+	}
+	if st.Service != "" {
+		fmt.Printf("运营商: %s\n", st.Service)
+	}
+	if st.RemainingTraffic != "" {
+		fmt.Printf("剩余流量: %s\n", st.RemainingTraffic)
+	}
+	if !verbose {
+		return
+	}
+	if st.Message != "" {
+		fmt.Printf("服务端消息: %s\n", st.Message)
+	}
+	if len(st.Account) > 0 {
+		out, _ := json.MarshalIndent(st.Account, "", "  ")
+		fmt.Printf("账户信息: %s\n", out)
+	}
+	if len(st.Raw) > 0 {
+		out, _ := json.MarshalIndent(st.Raw, "", "  ")
+		fmt.Printf("认证门户原始字段: %s\n", out)
+	}
+}
+
+func cmdLogin(ctx context.Context, cfg *config.Config, username, password, service string, jsonOut bool) {
 	if username != "" {
 		cfg.Username = username
 	}
@@ -312,7 +385,26 @@ func cmdLogin(ctx context.Context, cfg *config.Config, username, password, servi
 	if err != nil {
 		fatal("认证失败: %v", err)
 	}
-	fmt.Printf("login ok: user=%s service=%s ip=%s\n", st.Username, st.Service, st.UserIP)
+	if jsonOut {
+		out, _ := json.MarshalIndent(struct {
+			OK       bool   `json:"ok"`
+			Username string `json:"username,omitempty"`
+			Name     string `json:"name,omitempty"`
+			Service  string `json:"service,omitempty"`
+			UserIP   string `json:"user_ip,omitempty"`
+			UserMAC  string `json:"user_mac,omitempty"`
+		}{
+			OK:       true,
+			Username: st.Username,
+			Name:     st.Name,
+			Service:  st.Service,
+			UserIP:   st.UserIP,
+			UserMAC:  st.UserMAC,
+		}, "", "  ")
+		fmt.Println(string(out))
+		return
+	}
+	fmt.Printf("登录成功。用户: %s / 服务: %s / IP: %s\n", st.Username, st.Service, st.UserIP)
 }
 
 // ensureCAS 保证 casClient 持有属于 cfg.Username 的有效 TGC：
@@ -376,7 +468,7 @@ func newSelfsvcClient(ctx context.Context, cfg *config.Config) (*selfsvc.Client,
 	return sc, nil
 }
 
-func cmdDevices(ctx context.Context, cfg *config.Config, verbose bool) {
+func cmdDevices(ctx context.Context, cfg *config.Config, jsonOut bool) {
 	sc, err := newSelfsvcClient(ctx, cfg)
 	if err != nil {
 		fatal("自助服务认证失败: %v", err)
@@ -385,7 +477,7 @@ func cmdDevices(ctx context.Context, cfg *config.Config, verbose bool) {
 	if err != nil {
 		fatal("查询在线设备失败: %v", err)
 	}
-	if verbose {
+	if jsonOut {
 		out, _ := json.MarshalIndent(list, "", "  ")
 		fmt.Println(string(out))
 		return
@@ -418,7 +510,7 @@ func cmdDevices(ctx context.Context, cfg *config.Config, verbose bool) {
 	}
 }
 
-func cmdKick(ctx context.Context, cfg *config.Config, targets []string) {
+func cmdKick(ctx context.Context, cfg *config.Config, targets []string, jsonOut bool) {
 	sc, err := newSelfsvcClient(ctx, cfg)
 	if err != nil {
 		fatal("自助服务认证失败: %v", err)
@@ -431,6 +523,7 @@ func cmdKick(ctx context.Context, cfg *config.Config, targets []string) {
 	for _, d := range list.Online {
 		byUUID[d.UUID] = d
 	}
+	var kicked []selfsvc.Device
 	var uuids []string
 	var descs []string
 	for _, target := range targets {
@@ -438,11 +531,20 @@ func cmdKick(ctx context.Context, cfg *config.Config, targets []string) {
 		if err != nil {
 			fatal("%v", err)
 		}
+		kicked = append(kicked, d)
 		uuids = append(uuids, d.UUID)
 		descs = append(descs, fmt.Sprintf("%s(%s)", orEmpty(d.Name, "未命名"), d.UUID))
 	}
 	if err := sc.KickOffline(ctx, uuids); err != nil {
 		fatal("下线失败: %v", err)
+	}
+	if jsonOut {
+		out, _ := json.MarshalIndent(struct {
+			OK     bool             `json:"ok"`
+			Kicked []selfsvc.Device `json:"kicked"`
+		}{OK: true, Kicked: kicked}, "", "  ")
+		fmt.Println(string(out))
+		return
 	}
 	fmt.Printf("kick ok: %s\n", strings.Join(descs, ", "))
 }
@@ -477,7 +579,7 @@ func orEmpty(s, def string) string {
 	return s
 }
 
-func cmdLogout(ctx context.Context, cfg *config.Config) {
+func cmdLogout(ctx context.Context, cfg *config.Config, jsonOut bool) {
 	_, portalClient, err := authd.NewClients(cfg)
 	if err != nil {
 		fatal("%v", err)
@@ -485,7 +587,14 @@ func cmdLogout(ctx context.Context, cfg *config.Config) {
 	if err := portalClient.Logout(ctx); err != nil {
 		fatal("登出失败: %v", err)
 	}
-	fmt.Println("logout ok")
+	if jsonOut {
+		out, _ := json.MarshalIndent(struct {
+			OK bool `json:"ok"`
+		}{OK: true}, "", "  ")
+		fmt.Println(string(out))
+		return
+	}
+	fmt.Println("下线成功")
 }
 
 func cmdDaemon(ctx context.Context, cfg *config.Config, verbose bool) {
@@ -536,6 +645,6 @@ func printSystemConfigHint() {
 
 func printIncompleteConfigHint(path string, err error) {
 	fmt.Fprintf(os.Stderr, "ysunethelper: 配置文件 %s 尚未完成配置：%v\n", path, err)
-	fmt.Fprintf(os.Stderr, "请编辑该文件（例如 sudoedit %s），填写 username/password，并确认 service；service 默认为“校园网”。\n", path)
+	fmt.Fprintf(os.Stderr, "请编辑该文件，填写 username/password，并确认 service；service 默认为“校园网”。\n", path)
 	fmt.Fprintln(os.Stderr, "配置完成后再启动 daemon，例如：sudo systemctl enable --now ysunethelper")
 }
