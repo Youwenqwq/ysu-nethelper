@@ -32,6 +32,10 @@ var ticketRE = regexp.MustCompile(`[?&]ticket=([^&]+)`)
 // Client 是 CAS 网关客户端。
 type Client struct {
 	hc *httpkit.Client
+	// username 是本 session TGC 所属的账号：Login 成功时记录，
+	// LoadCredential 从凭据文件恢复。用于识别「TGC 有效但属于
+	// 别的账号」——只查 TGC 有效性会把旧账号的会话误当新账号用。
+	username string
 }
 
 // New 构造客户端；timeout 作用于每次 HTTP 请求。
@@ -95,8 +99,16 @@ func (c *Client) Login(ctx context.Context, username, password string) error {
 	if err != nil {
 		return fmt.Errorf("CAS login submit failed: %w", err)
 	}
-	return c.classifyStep1Response(ctx, resp)
+	if err := c.classifyStep1Response(ctx, resp); err != nil {
+		return err
+	}
+	c.username = username
+	return nil
 }
+
+// Username 返回当前 session TGC 所属的账号；未经 Login/LoadCredential
+// 建立归属信息时为空串。
+func (c *Client) Username() string { return c.username }
 
 // GetServiceTicket 用 session 上的 TGC 为 serviceURL 签发一张 ST。
 // TGC 失效（302 回登录页）时报 ErrNotAuthenticated，由调用方重新 Login。

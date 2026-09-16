@@ -106,12 +106,18 @@ func NewClients(cfg *config.Config) (*cas.Client, *eportal.Client, error) {
 	return casClient, eportal.New(cfg.HTTPTimeout.D()), nil
 }
 
-// Authenticate 执行一次完整认证：确保 TGC 有效（失效则用配置里的账密重新登录并持久化）
-// 再走 CAS → ePortal 委托认证。CLI 的 login 与 Daemon 的重认证共用此路径。
+// Authenticate 执行一次完整认证：确保 TGC 有效且属于配置账号（失效或归属
+// 其他账号时用配置里的账密重新登录并持久化）再走 CAS → ePortal 委托认证。
+// Daemon 的重认证走此路径；CLI 单发命令用 main 包的 ensureCAS。
 func Authenticate(ctx context.Context, cfg *config.Config, casClient *cas.Client, portal *eportal.Client) (*eportal.OnlineStatus, error) {
 	ok, err := casClient.IsAuthenticated(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// 归属不明（旧版凭据文件）或归属其他账号时同样重登，理由见 ensureCAS。
+	if ok && cfg.Username != "" && casClient.Username() != cfg.Username {
+		casClient.DropCredential()
+		ok = false
 	}
 	if !ok {
 		if err := casClient.Login(ctx, cfg.Username, cfg.Password); err != nil {

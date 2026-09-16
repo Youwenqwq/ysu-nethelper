@@ -169,6 +169,17 @@ func (s *CookieStore) Install(entries []CookieEntry) {
 	}
 }
 
+// Clear 删除满足 filter 的 cookie 条目；filter 为 nil 时清空全部。
+func (s *CookieStore) Clear(filter func(domain string) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, e := range s.cookies {
+		if filter == nil || filter(e.Domain) {
+			delete(s.cookies, key)
+		}
+	}
+}
+
 // defaultPath 实现 RFC 6265 §5.1.4 的 default-path 计算。
 func defaultPath(reqPath string) string {
 	if reqPath == "" || !strings.HasPrefix(reqPath, "/") ||

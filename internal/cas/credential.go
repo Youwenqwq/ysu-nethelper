@@ -23,7 +23,10 @@ func isCASCookie(domain, path string) bool {
 }
 
 type credentialFile struct {
-	Cookies []httpkit.CookieEntry `json:"cookies"`
+	// Username 记录 TGC 所属账号；旧版凭据文件没有该字段（为空），
+	// 调用方在账号归属不明时应按各自策略处理（见 ensureCAS/Authenticate）。
+	Username string                `json:"username,omitempty"`
+	Cookies  []httpkit.CookieEntry `json:"cookies"`
 }
 
 // SaveCredential 把 session 中 CAS 网关域的 cookie 落盘（0600）。
@@ -38,7 +41,7 @@ func (c *Client) SaveCredential(path string) error {
 			filtered = append(filtered, e)
 		}
 	}
-	data, err := json.MarshalIndent(credentialFile{Cookies: filtered}, "", "  ")
+	data, err := json.MarshalIndent(credentialFile{Username: c.username, Cookies: filtered}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -72,5 +75,14 @@ func (c *Client) LoadCredential(path string) error {
 		}
 	}
 	c.hc.Cookies.Install(f.Cookies)
+	c.username = f.Username
 	return nil
+}
+
+// DropCredential 丢弃 session 中的 CAS 凭据（TGC 及账号归属）。
+// 凭据属于其他账号需要换号重登时调用：带着旧 TGC 访问登录页会被
+// CAS 直接放行（302 出票），拿不到登录表单，无法换号。
+func (c *Client) DropCredential() {
+	c.hc.Cookies.Clear(func(domain string) bool { return domain == cookieDomain })
+	c.username = ""
 }

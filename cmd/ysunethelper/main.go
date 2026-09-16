@@ -315,12 +315,26 @@ func cmdLogin(ctx context.Context, cfg *config.Config, username, password, servi
 	fmt.Printf("login ok: user=%s service=%s ip=%s\n", st.Username, st.Service, st.UserIP)
 }
 
-// ensureCAS 保证 casClient 持有有效 TGC：失效时优先用配置账密重新登录
-// 并持久化；账密缺失则交互式询问。
+// ensureCAS 保证 casClient 持有属于 cfg.Username 的有效 TGC：
+// 失效或归属其他账号时优先用配置账密重新登录并持久化；账密缺失则交互式询问。
 func ensureCAS(ctx context.Context, cfg *config.Config, casClient *cas.Client) error {
 	ok, err := casClient.IsAuthenticated(ctx)
 	if err != nil {
 		return fmt.Errorf("CAS 网关不可达: %w", err)
+	}
+	// TGC 有效但属于另一个账号（切换过配置/-u 的典型情形），或凭据文件
+	// 是旧版、没有记录账号归属：继续使用会以旧账号身份完成 portal 准入，
+	// 运营商绑定校验全部打在旧账号上，报出误导性的「未绑定运营商」。
+	// 两种情况都丢弃凭据重新登录（旧版文件只发生一次，重登后即带归属）。
+	if ok && cfg.Username != "" && casClient.Username() != cfg.Username {
+		if owner := casClient.Username(); owner != "" {
+			fmt.Fprintf(os.Stderr, "ysunethelper: 缓存的 CAS 凭据属于 %s，与当前账号 %s 不符，将以当前账号重新登录\n",
+				owner, cfg.Username)
+		} else {
+			fmt.Fprintln(os.Stderr, "ysunethelper: 缓存的 CAS 凭据缺少账号归属信息（旧版凭据文件），将以当前账号重新登录一次")
+		}
+		casClient.DropCredential()
+		ok = false
 	}
 	if ok {
 		return nil
