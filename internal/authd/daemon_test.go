@@ -46,6 +46,33 @@ func observedProber(t *testing.T, requests chan<- time.Time, status string) *pro
 	return p
 }
 
+// observedPortal 返回所有请求都落到内存假服务器的 portal 客户端。
+// 响应对 portal 协议必然非法——只覆盖「INIT 首轮直查 portal 失败后
+// 退避」的路径，不模拟任何成功的 portal 交互。
+func observedPortal(t *testing.T, status string) *eportal.Client {
+	t.Helper()
+	original := http.DefaultTransport
+	transport := original.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			req, err := http.ReadRequest(bufio.NewReader(server))
+			if err != nil {
+				return
+			}
+			req.Body.Close()
+			io.WriteString(server, "HTTP/1.1 "+status+"\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+		}()
+		return client, nil
+	}
+	http.DefaultTransport = transport
+	c := eportal.New(time.Second)
+	http.DefaultTransport = original
+	return c
+}
+
 func TestDaemonNoAuthPeriod(t *testing.T) {
 	for _, tt := range []struct {
 		name            string
@@ -77,7 +104,8 @@ func TestDaemonNoAuthPeriod(t *testing.T) {
 					t.Fatal(err)
 				}
 				requests := make(chan time.Time, 8)
-				d := &Daemon{cfg: cfg, log: logx.New(io.Discard, logx.LevelInfo), prober: observedProber(t, requests, tt.status)}
+				d := &Daemon{cfg: cfg, log: logx.New(io.Discard, logx.LevelInfo),
+					prober: observedProber(t, requests, tt.status), portal: observedPortal(t, tt.status)}
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				done := make(chan struct{})

@@ -7,6 +7,7 @@ package probe
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -51,19 +52,35 @@ type URLResult struct {
 	Detail string // 状态码或错误摘要
 }
 
-// Check 逐个探测，返回每个探针的结果。任一 204 即整体在线。
+// Check 并发探测所有探针，返回每个探针的结果。任一 204 即整体在线。
 func (p *Prober) Check(ctx context.Context) []URLResult {
-	results := make([]URLResult, 0, len(p.urls))
-	for _, u := range p.urls {
-		results = append(results, p.checkOne(ctx, u))
+	results := make([]URLResult, len(p.urls))
+	var wg sync.WaitGroup
+	for i, u := range p.urls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = p.checkOne(ctx, u)
+		}()
 	}
+	wg.Wait()
 	return results
 }
 
-// Online 任一探针返回 204 即为在线。
+// Online 任一探针返回 204 即为在线。并发探测，首个 204 立即返回
+// （取消其余在途探测）；全部失败时的耗时为单次超时而非各探针之和。
 func (p *Prober) Online(ctx context.Context) bool {
-	for _, r := range p.Check(ctx) {
-		if r.OK {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan bool, len(p.urls))
+	for _, u := range p.urls {
+		go func() {
+			// 缓冲槽位保证提前返回后 goroutine 不阻塞泄漏
+			results <- p.checkOne(ctx, u).OK
+		}()
+	}
+	for range p.urls {
+		if <-results {
 			return true
 		}
 	}

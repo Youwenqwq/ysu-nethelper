@@ -8,6 +8,9 @@
 //	  portal 不可达                    → NO_LINK（不在校园网），短间隔重试
 //	  portal 说 online（假死）          → 先 offline 再强制重认证
 //	  portal 说 offline（真掉线）       → 直接重认证
+//	启动首轮（INIT）探针失败跳过防抖，直接查 portal 状态——启动时大概率是
+//	真掉线，离线则立即认证，不白等 N 轮确认；网络健康时一轮并发探针即转
+//	ONLINE，完全不触碰 portal（避免离线查询在服务端遗留流程会话）。
 //	禁认证时段内暂停整条判定链，不主动登出；结束后重新探测。
 //
 // 重认证 = 确保 CAS TGC 有效（失效则用配置里的账密重新登录并持久化）
@@ -165,8 +168,11 @@ func (d *Daemon) tick(ctx context.Context) error {
 		return nil
 	}
 
-	// 2. 防抖：连续确认 N 次都失败才动作
-	if !d.confirmOffline(ctx) {
+	// 2. 防抖：连续确认 N 次都失败才动作。
+	// 启动首轮（INIT）跳过确认：刚启动时大概率是真掉线/刚开机，直接
+	// 落到 portal 权威状态判定，避免白等 N 轮确认才开始认证。
+	// 稳态下的抖动仍走确认流程。
+	if d.state != StateInit && !d.confirmOffline(ctx) {
 		return nil // 确认期间探针恢复，本轮结束（下一轮重新判定）
 	}
 	if d.pauseAuthentication(ctx) {
@@ -174,6 +180,9 @@ func (d *Daemon) tick(ctx context.Context) error {
 	}
 
 	// 3. 查 portal 状态，区分假死/真掉线/不在校园网
+	if d.state == StateInit {
+		d.log.Info("启动首轮探针失败，直接查询认证状态")
+	}
 	status, err := d.portal.GetStatus(ctx)
 	if err != nil {
 		if httpkit.IsNetworkError(err) {
@@ -193,13 +202,13 @@ func (d *Daemon) tick(ctx context.Context) error {
 	d.setState(StateOffline)
 	if status.Online {
 		// 假死：portal 认为在线但 Internet 不通，先下线再强制重认证
-		d.log.Warn("检测到假死：portal 在线但 Internet 不通，强制重认证",
+		d.log.Warn("检测到假死：认证在线但 Internet 不通，强制重认证",
 			"username", status.Username, "user_ip", status.UserIP)
 		if err := d.portal.Logout(ctx); err != nil {
 			d.log.Warn("假死场景下线失败，继续尝试认证", "err", err)
 		}
 	} else {
-		d.log.Info("portal 确认为离线，开始认证", "message", status.Message)
+		d.log.Info("认证网关确认为离线，开始认证", "message", status.Message)
 	}
 
 	// 4. 认证
