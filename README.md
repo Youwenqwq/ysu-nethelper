@@ -31,6 +31,7 @@ ysunethelper [-config path] logout [--json]
 ysunethelper [-config path] devices [--json]
 ysunethelper [-config path] kick [--json] <序号|UUID>...
 ysunethelper [-config path] daemon
+ysunethelper version
 ysunethelper -h
 ```
 
@@ -197,6 +198,8 @@ ysunethelper -config /path/to/config.json login
 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ysunethelper ./cmd/ysunethelper
 go test ./...
 ```
+
+发布构建通过 `-ldflags "-X main.version=vX.Y.Z"` 注入版本号（见 release workflow）；本地构建的 `ysunethelper version` 显示 `dev`（仓库构建时附带提交号）。
 
 ## 项目结构
 

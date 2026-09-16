@@ -17,6 +17,7 @@
 //	                                      下线指定在线设备（序号见 devices 输出）
 //	ysunethelper [-config path] daemon    Daemon 模式：自动保持在线（前台运行，
 //	                                      由 systemd/OpenRC 托管）
+//	ysunethelper version                  显示版本号
 //
 // daemon 默认解析：-config 指定 > 当前目录 ./ysunethelper.json >
 // ~/.config/ysunethelper/config.json > /etc/ysunethelper/config.json。
@@ -55,6 +56,7 @@ func main() {
 	fs := flag.NewFlagSet("ysunethelper", flag.ExitOnError)
 	configPath := fs.String("config", "", "配置文件路径（默认路径依命令而异；daemon 包含 /etc/ysunethelper/config.json）")
 	verbose := fs.Bool("v", false, "详细输出；daemon 下启用 debug 级日志")
+	showVersion := fs.Bool("version", false, "显示版本号并退出")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "燕山大学校园网认证助手")
 		fmt.Fprintln(os.Stderr, "\n用法:")
@@ -68,11 +70,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  devices [--json]                            查询账号当前在线设备")
 		fmt.Fprintln(os.Stderr, "  kick [--json] <序号|UUID>...                 下线指定在线设备")
 		fmt.Fprintln(os.Stderr, "  daemon                                      前台运行在线守护进程")
+		fmt.Fprintln(os.Stderr, "  version                                     显示版本号")
 		fmt.Fprintln(os.Stderr, "\n全局选项（必须放在命令之前）:")
 		fs.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "\n使用 ysunethelper <命令> -h 查看命令选项。")
 	}
 	_ = fs.Parse(os.Args[1:])
+	if *showVersion {
+		fmt.Printf("ysunethelper %s\n", versionString())
+		os.Exit(0)
+	}
 	args := fs.Args()
 	if len(args) < 1 {
 		fs.Usage()
@@ -86,6 +93,9 @@ func main() {
 	defer stop()
 
 	switch cmd {
+	case "version":
+		ensureNoCommandArgs(cmd, cmdArgs)
+		fmt.Printf("ysunethelper %s\n", versionString())
 	case "status":
 		statusVerbose, testConnectivity, jsonOut := parseStatusArgs(cmdArgs)
 		cfg, err := config.LoadOptionalCLI(*configPath)
@@ -262,6 +272,10 @@ func ensureNoCommandArgs(cmd string, args []string) {
 		if cmd == "daemon" {
 			fmt.Fprintln(os.Stderr, "用法: ysunethelper [-v] daemon")
 			fmt.Fprintln(os.Stderr, "\n前台运行在线守护进程；使用命令前的全局 -v 输出 debug 级日志。")
+		}
+		if cmd == "version" {
+			fmt.Fprintln(os.Stderr, "用法: ysunethelper version")
+			fmt.Fprintln(os.Stderr, "\n显示版本号。")
 		}
 		os.Exit(0)
 	}
@@ -645,6 +659,6 @@ func printSystemConfigHint() {
 
 func printIncompleteConfigHint(path string, err error) {
 	fmt.Fprintf(os.Stderr, "ysunethelper: 配置文件 %s 尚未完成配置：%v\n", path, err)
-	fmt.Fprintf(os.Stderr, "请编辑该文件，填写 username/password，并确认 service；service 默认为“校园网”。\n", path)
+	fmt.Fprintln(os.Stderr, "请编辑该文件，填写 username/password，并确认 service；service 默认为“校园网”。")
 	fmt.Fprintln(os.Stderr, "配置完成后再启动 daemon，例如：sudo systemctl enable --now ysunethelper")
 }
