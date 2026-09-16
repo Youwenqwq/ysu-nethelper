@@ -73,6 +73,22 @@ func TestCookieSnapshotInstallRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCookieStoreLongestPathFirst 覆盖同一主机多个应用各自下发同名 cookie
+// 的场景（auth1 的 / 与 /cas-sso/ 各有 SESSION）：RFC 6265 §5.4 要求
+// path 更长的排前面，服务端对重名 cookie 取首个匹配。
+func TestCookieStoreLongestPathFirst(t *testing.T) {
+	s := NewCookieStore()
+	s.Set(mustURL(t, "https://example.com/login"), []*http.Cookie{{Name: "SESSION", Value: "root", Path: "/"}})
+	s.Set(mustURL(t, "https://example.com/cas-sso/login"), []*http.Cookie{{Name: "SESSION", Value: "sso", Path: "/cas-sso/"}})
+
+	if got := s.Get(mustURL(t, "https://example.com/cas-sso/login")); got != "SESSION=sso; SESSION=root" {
+		t.Errorf("longer path should come first, got %q", got)
+	}
+	if got := s.Get(mustURL(t, "https://example.com/self/index")); got != "SESSION=root" {
+		t.Errorf("only root cookie matches /self, got %q", got)
+	}
+}
+
 func TestFollowJSRedirect(t *testing.T) {
 	var hits []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

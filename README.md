@@ -28,6 +28,8 @@ deploy/ 下也放置了一个 initd 模板，可按需手动配置使用。
 ysunethelper [-config path] status [-v] [-test]
 ysunethelper [-config path] login [-u username] [-p password] [-s service]
 ysunethelper [-config path] logout
+ysunethelper [-config path] devices [-v]
+ysunethelper [-config path] kick <序号|UUID>...
 ysunethelper [-config path] daemon
 ysunethelper -h
 ```
@@ -81,6 +83,21 @@ ysunethelper login -u 202400114514 -p 'your-password' -s campus
 ysunethelper logout
 ```
 
+### 在线设备管理
+
+通过自助服务查询账号当前在线设备（当前设备有标注，无需本机在线）：
+
+```sh
+ysunethelper devices
+```
+
+下线指定设备，目标为 `devices` 输出中的序号（1 起）或 UUID，可一次多个：
+
+```sh
+ysunethelper kick 2
+ysunethelper kick 44484b32a082306001a0a8b4470c6b39
+```
+
 命令行密码可能被本机其他用户通过进程列表看到，长期使用建议写入权限为 0600 的配置文件。
 
 ## 配置
@@ -88,7 +105,7 @@ ysunethelper logout
 ### 配置文件路径
 
 - `daemon`：`-config` 显式指定 → `./ysunethelper.json` → `~/.config/ysunethelper/config.json` → `/etc/ysunethelper/config.json`
-- `status`、`login`、`logout`：与上述一致，但不检查 `/etc` 下的配置，避免权限问题。
+- `status`、`login`、`logout`、`devices`、`kick`：与上述一致，但不检查 `/etc` 下的配置，避免权限问题。
 
 显式指定时，把 `-config` 放在子命令之前：
 

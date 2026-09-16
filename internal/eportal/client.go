@@ -168,8 +168,13 @@ func (c *Client) Logout(ctx context.Context) error {
 //
 // 认证成功后流程通常停在服务选择节点：先查 userOnline，未在线则走
 // serviceSelection → serviceLogin 完成准入，最后复查 userOnline。
+//
+// 失败原因的可观测性：serviceLogin 的 authResult 不可信——实测准入被拒
+// （未绑定运营商、设备数超限等）时仍返回 "success"，真正的失败文案在
+// authMessage 里；userOnline 的 message 字段同样携带该文案。最终复查
+// 仍不在线时，把这两个来源的原因一并透出。
 func (c *Client) finishAdmission(ctx context.Context, sessionID, service string) (*OnlineStatus, error) {
-	online, err := c.checkUserOnline(ctx, sessionID)
+	online, _, err := c.checkUserOnline(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,11 +189,12 @@ func (c *Client) finishAdmission(ctx context.Context, sessionID, service string)
 		if err != nil {
 			return nil, err
 		}
-		var lr struct {
-			AuthResult  string `json:"authResult"`
-			AuthMessage string `json:"authMessage"`
-		}
+		var loginMessage string
 		if len(data) > 0 {
+			var lr struct {
+				AuthResult  string `json:"authResult"`
+				AuthMessage string `json:"authMessage"`
+			}
 			if err := json.Unmarshal(data, &lr); err != nil {
 				return nil, fmt.Errorf("%w: bad serviceLogin data: %v", ErrProtocol, err)
 			}
@@ -199,33 +205,41 @@ func (c *Client) finishAdmission(ctx context.Context, sessionID, service string)
 			default:
 				return nil, fmt.Errorf("%w: unexpected authResult from serviceLogin: %q", ErrProtocol, lr.AuthResult)
 			}
+			loginMessage = lr.AuthMessage
 		}
-		online, err = c.checkUserOnline(ctx, sessionID)
+		var onlineMessage string
+		online, onlineMessage, err = c.checkUserOnline(ctx, sessionID)
 		if err != nil {
 			return nil, err
 		}
 		if !online {
-			return nil, fmt.Errorf("%w: 登录校验失败: 认证后用户不在线", ErrAuth)
+			reason := orDefault(onlineMessage, loginMessage)
+			if reason == "" {
+				return nil, fmt.Errorf("%w: 登录校验失败: 认证后用户不在线", ErrAuth)
+			}
+			return nil, fmt.Errorf("%w: 登录校验失败: 认证后用户不在线，服务端原因: %s", ErrAuth, reason)
 		}
 	}
 	return c.queryStatus(ctx, sessionID)
 }
 
-// checkUserOnline 查 userOnline 接口，返回是否在线。
-func (c *Client) checkUserOnline(ctx context.Context, sessionID string) (bool, error) {
+// checkUserOnline 查 userOnline 接口，返回是否在线及服务端结果信息
+// （准入被拒时 message 携带失败文案，在线或尚未准入时可能为空）。
+func (c *Client) checkUserOnline(ctx context.Context, sessionID string) (bool, string, error) {
 	data, err := c.postJSON(ctx, userOnlineURL, map[string]string{"sessionId": sessionID})
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	var u struct {
-		Online bool `json:"online"`
+		Online  bool   `json:"online"`
+		Message string `json:"message"`
 	}
 	if len(data) > 0 {
 		if err := json.Unmarshal(data, &u); err != nil {
-			return false, fmt.Errorf("%w: bad userOnline data: %v", ErrProtocol, err)
+			return false, "", fmt.Errorf("%w: bad userOnline data: %v", ErrProtocol, err)
 		}
 	}
-	return u.Online, nil
+	return u.Online, u.Message, nil
 }
 
 // fetchSessionInfo 跟随 portal 跳转链，解析 portal-main 落地 URL 上的会话参数。

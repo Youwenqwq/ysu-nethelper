@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +102,9 @@ func (s *CookieStore) Set(reqURL *url.URL, cookies []*http.Cookie) {
 }
 
 // Get 返回应随请求发出的 Cookie 头值（空串表示无匹配）。
+// RFC 6265 §5.4：同名列出的 cookie 按 path 从长到短排序——同一站点
+// 多个应用（如 / 与 /cas-sso/ 各自下发 SESSION）时，服务端取首个匹配，
+// 顺序错误会让请求带上错误应用的会话。
 func (s *CookieStore) Get(reqURL *url.URL) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -110,7 +114,7 @@ func (s *CookieStore) Get(reqURL *url.URL) string {
 		path = "/"
 	}
 	now := time.Now()
-	var pairs []string
+	var matched []*CookieEntry
 	for key, e := range s.cookies {
 		if e.expired(now) {
 			delete(s.cookies, key)
@@ -122,6 +126,13 @@ func (s *CookieStore) Get(reqURL *url.URL) string {
 		if e.Secure && reqURL.Scheme != "https" {
 			continue
 		}
+		matched = append(matched, e)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return len(matched[i].Path) > len(matched[j].Path)
+	})
+	pairs := make([]string, 0, len(matched))
+	for _, e := range matched {
 		pairs = append(pairs, e.Name+"="+e.Value)
 	}
 	return strings.Join(pairs, "; ")

@@ -9,12 +9,16 @@
 //	                                      认证上线（CAS → ePortal；TGC 失效且无
 //	                                      配置账密时交互式询问）
 //	ysunethelper [-config path] logout    登出下线
+//	ysunethelper [-config path] devices [-v]
+//	                                      查询账号当前在线设备（自助服务）
+//	ysunethelper [-config path] kick <序号|UUID>...
+//	                                      下线指定在线设备（序号见 devices 输出）
 //	ysunethelper [-config path] daemon    Daemon 模式：自动保持在线（前台运行，
 //	                                      由 systemd/OpenRC 托管）
 //
 // daemon 默认解析：-config 指定 > 当前目录 ./ysunethelper.json >
 // ~/.config/ysunethelper/config.json > /etc/ysunethelper/config.json。
-// status/login/logout 的隐式解析不读取系统级配置；显式 -config 仍然生效。
+// status/login/logout/devices/kick 的隐式解析不读取系统级配置；显式 -config 仍然生效。
 // daemon 首次运行且未找到配置时，自动在当前目录生成 ysunethelper.json
 // 模板（0600）后退出。
 package main
@@ -28,13 +32,18 @@ import (
 	"io/fs"
 	"os"
 	"os/signal"
+	"regexp"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"ysunethelper/internal/authd"
+	"ysunethelper/internal/cas"
 	"ysunethelper/internal/config"
 	"ysunethelper/internal/logx"
 	"ysunethelper/internal/probe"
 	"ysunethelper/internal/prompt"
+	"ysunethelper/internal/selfsvc"
 )
 
 const configExitCode = 78 // EX_CONFIG
@@ -53,6 +62,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "    -v 显示完整账户及 Portal 原始字段；-test 额外执行 Internet 连通性检测")
 		fmt.Fprintln(os.Stderr, "  login [-u 用户名] [-p 密码] [-s 运营商]      登录校园网")
 		fmt.Fprintln(os.Stderr, "  logout                                      登出当前设备")
+		fmt.Fprintln(os.Stderr, "  devices                                     查询账号当前在线设备")
+		fmt.Fprintln(os.Stderr, "  kick <序号|UUID>...                          下线指定在线设备（序号见 devices 输出）")
 		fmt.Fprintln(os.Stderr, "  daemon                                      前台运行在线守护进程")
 		fmt.Fprintln(os.Stderr, "\n全局选项（必须放在命令之前）:")
 		fs.PrintDefaults()
@@ -93,6 +104,20 @@ func main() {
 			fatal("加载配置失败: %v", err)
 		}
 		cmdLogin(ctx, cfg, username, password, service)
+	case "devices":
+		parseDevicesArgs(cmdArgs)
+		cfg, err := config.LoadOptionalCLI(*configPath)
+		if err != nil {
+			fatal("加载配置失败: %v", err)
+		}
+		cmdDevices(ctx, cfg, *verbose)
+	case "kick":
+		targets := parseKickArgs(cmdArgs)
+		cfg, err := config.LoadOptionalCLI(*configPath)
+		if err != nil {
+			fatal("加载配置失败: %v", err)
+		}
+		cmdKick(ctx, cfg, targets)
 	case "daemon":
 		ensureNoCommandArgs(cmd, cmdArgs)
 		cfg, err := config.Load(*configPath)
@@ -165,6 +190,37 @@ func parseLoginArgs(args []string) (username, password, service string) {
 		os.Exit(2)
 	}
 	return username, password, service
+}
+
+// parseDevicesArgs 校验 devices 不带额外参数。
+func parseDevicesArgs(args []string) {
+	fs := flag.NewFlagSet("devices", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper devices")
+		fmt.Fprintln(os.Stderr, "\n通过自助服务查询账号当前在线设备。全局 -v 输出接口原始数据。")
+	}
+	_ = fs.Parse(args)
+	if fs.NArg() != 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+}
+
+// parseKickArgs 解析 kick 的目标列表（序号或 onlineUserUuid）。
+func parseKickArgs(args []string) []string {
+	fs := flag.NewFlagSet("kick", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "用法: ysunethelper kick <序号|UUID>...")
+		fmt.Fprintln(os.Stderr, "\n下线账号的指定在线设备。目标为 devices 输出中的序号（1 起）或 UUID。")
+	}
+	_ = fs.Parse(args)
+	if fs.NArg() == 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	return fs.Args()
 }
 
 func ensureNoCommandArgs(cmd string, args []string) {
@@ -249,27 +305,162 @@ func cmdLogin(ctx context.Context, cfg *config.Config, username, password, servi
 	if err != nil {
 		fatal("%v", err)
 	}
-	// TGC 有效时无需账密；失效时优先用配置账密，缺失则交互式询问
+	if err := ensureCAS(ctx, cfg, casClient); err != nil {
+		fatal("CAS 登录失败: %v", err)
+	}
+	st, err := portalClient.LoginViaCAS(ctx, casClient, cfg.Service)
+	if err != nil {
+		fatal("认证失败: %v", err)
+	}
+	fmt.Printf("login ok: user=%s service=%s ip=%s\n", st.Username, st.Service, st.UserIP)
+}
+
+// ensureCAS 保证 casClient 持有有效 TGC：失效时优先用配置账密重新登录
+// 并持久化；账密缺失则交互式询问。
+func ensureCAS(ctx context.Context, cfg *config.Config, casClient *cas.Client) error {
 	ok, err := casClient.IsAuthenticated(ctx)
 	if err != nil {
-		fatal("CAS 网关不可达: %v", err)
+		return fmt.Errorf("CAS 网关不可达: %w", err)
 	}
-	if !ok && (cfg.Username == "" || cfg.Password == "") {
+	if ok {
+		return nil
+	}
+	if cfg.Username == "" || cfg.Password == "" {
 		u, p, err := prompt.Credentials(ctx, os.Stdin)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				fmt.Fprintln(os.Stderr, "ysunethelper: 已取消")
 				os.Exit(130)
 			}
-			fatal("%v", err)
+			return err
 		}
 		cfg.Username, cfg.Password = u, p
 	}
-	st, err := authd.Authenticate(ctx, cfg, casClient, portalClient)
-	if err != nil {
-		fatal("认证失败: %v", err)
+	if err := casClient.Login(ctx, cfg.Username, cfg.Password); err != nil {
+		return err
 	}
-	fmt.Printf("login ok: user=%s service=%s ip=%s\n", st.Username, st.Service, st.UserIP)
+	if err := casClient.SaveCredential(cfg.CredentialPath); err != nil {
+		// 持久化失败不阻断本次使用，但下次还得重登
+		return fmt.Errorf("保存 CAS 凭据失败: %w", err)
+	}
+	return nil
+}
+
+// newSelfsvcClient 建立已认证的自助服务客户端。
+func newSelfsvcClient(ctx context.Context, cfg *config.Config) (*selfsvc.Client, error) {
+	casClient, _, err := authd.NewClients(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureCAS(ctx, cfg, casClient); err != nil {
+		return nil, fmt.Errorf("CAS 登录失败: %w", err)
+	}
+	sc := selfsvc.New(cfg.HTTPTimeout.D())
+	if err := sc.Login(ctx, casClient); err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+func cmdDevices(ctx context.Context, cfg *config.Config, verbose bool) {
+	sc, err := newSelfsvcClient(ctx, cfg)
+	if err != nil {
+		fatal("自助服务认证失败: %v", err)
+	}
+	list, err := sc.ListDevices(ctx)
+	if err != nil {
+		fatal("查询在线设备失败: %v", err)
+	}
+	if verbose {
+		out, _ := json.MarshalIndent(list, "", "  ")
+		fmt.Println(string(out))
+		return
+	}
+	if len(list.Online) == 0 {
+		fmt.Println("当前没有在线设备")
+		return
+	}
+	fmt.Printf("在线设备 %d 台:\n", len(list.Online))
+	for i, d := range list.Online {
+		var b strings.Builder
+		fmt.Fprintf(&b, "  [%d] %s", i+1, orEmpty(d.Name, "(未命名)"))
+		if d.Current {
+			b.WriteString("（当前设备）")
+		}
+		if d.IP != "" {
+			fmt.Fprintf(&b, "  ip=%s", d.IP)
+		}
+		if d.MAC != "" {
+			fmt.Fprintf(&b, "  mac=%s", d.MAC)
+		}
+		if d.Type != "" {
+			fmt.Fprintf(&b, "  type=%s", d.Type)
+		}
+		if d.OnlineDuration != "" {
+			fmt.Fprintf(&b, "  在线时长=%s", d.OnlineDuration)
+		}
+		fmt.Println(b.String())
+		fmt.Printf("      uuid=%s\n", d.UUID)
+	}
+}
+
+func cmdKick(ctx context.Context, cfg *config.Config, targets []string) {
+	sc, err := newSelfsvcClient(ctx, cfg)
+	if err != nil {
+		fatal("自助服务认证失败: %v", err)
+	}
+	list, err := sc.ListDevices(ctx)
+	if err != nil {
+		fatal("查询在线设备失败: %v", err)
+	}
+	byUUID := make(map[string]selfsvc.Device, len(list.Online))
+	for _, d := range list.Online {
+		byUUID[d.UUID] = d
+	}
+	var uuids []string
+	var descs []string
+	for _, target := range targets {
+		d, err := resolveKickTarget(target, list.Online, byUUID)
+		if err != nil {
+			fatal("%v", err)
+		}
+		uuids = append(uuids, d.UUID)
+		descs = append(descs, fmt.Sprintf("%s(%s)", orEmpty(d.Name, "未命名"), d.UUID))
+	}
+	if err := sc.KickOffline(ctx, uuids); err != nil {
+		fatal("下线失败: %v", err)
+	}
+	fmt.Printf("kick ok: %s\n", strings.Join(descs, ", "))
+}
+
+// resolveKickTarget 把 kick 参数解析为设备：32 位十六进制按 UUID，
+// 纯数字按 devices 列表序号（1 起）。
+func resolveKickTarget(target string, online []selfsvc.Device, byUUID map[string]selfsvc.Device) (selfsvc.Device, error) {
+	if isUUID(target) {
+		d, ok := byUUID[target]
+		if !ok {
+			return selfsvc.Device{}, fmt.Errorf("UUID %s 不在在线设备列表中", target)
+		}
+		return d, nil
+	}
+	if n, err := strconv.Atoi(target); err == nil {
+		if n < 1 || n > len(online) {
+			return selfsvc.Device{}, fmt.Errorf("序号 %d 超出范围（当前在线 %d 台）", n, len(online))
+		}
+		return online[n-1], nil
+	}
+	return selfsvc.Device{}, fmt.Errorf("无法识别的目标 %q：请用 devices 输出中的序号或 UUID", target)
+}
+
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+
+func isUUID(s string) bool { return uuidRE.MatchString(s) }
+
+func orEmpty(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func cmdLogout(ctx context.Context, cfg *config.Config) {
