@@ -235,13 +235,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
       - name: Download all architecture artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: ysunethelper-*
           path: artifacts
           merge-multiple: true
+
+      - name: Select release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes_file="release-notes/${VERSION}.md"
+          test -f "$notes_file"
+          cp "$notes_file" "${RUNNER_TEMP}/release-notes.md"
 
       - name: Publish GitHub Release
         working-directory: artifacts
@@ -262,6 +270,6 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
               "${release_files[@]}"
           fi
