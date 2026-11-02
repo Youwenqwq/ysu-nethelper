@@ -26,6 +26,12 @@ jobs:
           - { goos: linux, goarch: mips, gomips: softfloat, output: mips-softfloat }
           - { goos: linux, goarch: riscv64, output: riscv64 }
 
+          # Android builds with the NDK toolchain used by Mihomo.
+          - { goos: android, goarch: '386', ndk: i686-linux-android34, output: '386' }
+          - { goos: android, goarch: amd64, ndk: x86_64-linux-android34, output: amd64 }
+          - { goos: android, goarch: arm, ndk: armv7a-linux-androideabi34, output: armv7 }
+          - { goos: android, goarch: arm64, ndk: aarch64-linux-android34, output: arm64-v8 }
+
           # Darwin (Intel + Apple Silicon)
           - { goos: darwin, goarch: amd64, output: amd64 }
           - { goos: darwin, goarch: arm64, output: arm64 }
@@ -40,6 +46,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Android NDK
+        if: matrix.goos == 'android'
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -50,6 +63,10 @@ jobs:
           GOMIPS: ${{ matrix.gomips }}
           TARGET_NAME: ${{ matrix.output }}
           VERSION: ${{ github.ref_name }}
+          # Android only: clang prefix from the matrix and the NDK root
+          # installed above. Unused for non-Android targets.
+          NDK_ABI: ${{ matrix.ndk }}
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
           version="${VERSION#v}"
@@ -62,7 +79,18 @@ jobs:
             binary="dist/${base}"
           fi
 
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid= -X main.version=${VERSION}" -o "$binary" ./cmd/ysunethelper
+          ldflags="-s -w -buildid= -X main.version=${VERSION}"
+
+          if [ "$GOOS" = android ]; then
+            # Go requires external (cgo) linking for android/* targets, so we
+            # cannot use CGO_ENABLED=0 here. Point CC at the NDK clang wrapper.
+            export CGO_ENABLED=1
+            export CC="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/${NDK_ABI}-clang"
+            test -x "$CC" || { echo "NDK clang not found: $CC" >&2; exit 1; }
+            go build -trimpath -ldflags="$ldflags" -o "$binary" ./cmd/ysunethelper
+          else
+            CGO_ENABLED=0 go build -trimpath -ldflags="$ldflags" -o "$binary" ./cmd/ysunethelper
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
