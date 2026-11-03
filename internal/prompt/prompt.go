@@ -46,6 +46,19 @@ type lineResult struct {
 	err  error
 }
 
+// TerminalReader 为交互菜单创建读入器；脚本应使用显式命令参数。
+func TerminalReader(stdin *os.File) (*bufio.Reader, error) {
+	if !isTerminal(stdin) {
+		return nil, fmt.Errorf("stdin 不是终端；请使用 switch unicom 等显式命令")
+	}
+	return bufio.NewReader(stdin), nil
+}
+
+// ReadLine 读取可取消的一行输入。应在整个菜单中复用同一个 reader。
+func ReadLine(ctx context.Context, reader *bufio.Reader) (string, error) {
+	return readLine(ctx, reader)
+}
+
 // readLine 使终端输入可被 context 中断。读协程在取消后可能仍阻塞在 stdin，
 // 但调用方会随即退出进程；通道带缓冲，避免其在稍后读到输入时泄漏阻塞。
 func readLine(ctx context.Context, r *bufio.Reader) (string, error) {
