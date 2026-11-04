@@ -239,6 +239,10 @@ go test ./...
 
 发布构建通过 `-ldflags "-X main.version=vX.Y.Z"` 注入版本号（见 release workflow）；本地构建的 `ysunethelper version` 显示 `dev`（仓库构建时附带提交号）。
 
+发布 `v*` tag 时，Release workflow 会先创建草稿 Release，各架构编译后直接上传二进制到 Release；Linux 打包任务从同一 Release 下载对应二进制，完成 deb/rpm/pacman 打包与配置文件校验后直接上传安装包。全部架构和安装包成功后，从 Release 下载资源生成并上传 `SHA256SUMS`，最后发布新 Release，全程不使用 Actions artifact 中转。也可在 Actions 中手动运行 Release workflow，填写已有 tag，构建与发布都会使用该 tag 的代码。Release 说明由你直接在 GitHub Releases 页面填写，不再要求仓库提供对应 tag 的 Markdown 文件；新建草稿时说明留空，发布和重跑均不会覆盖已有标题或说明。
+
+同一 tag 的发布任务串行执行；失败时新 Release 保持草稿，已上传的文件保留，重跑会覆盖同名资源。重跑已经发布的版本时复用该 Release，不会将其撤回为草稿。此修改只影响后续工作流，不会删除以前已产生的 Actions artifact。
+
 ## 项目结构
 
 ```text

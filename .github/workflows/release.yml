@@ -3,12 +3,52 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release (for example v0.5.2)
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+# Runs for the same tag share Release assets; don't let them overwrite each other.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Prepare draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --draft \
+              --title "$RELEASE_TAG" \
+              --notes ""
+          fi
+
   build:
+    needs: prepare
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +78,12 @@ jobs:
 
           # Windows
           - { goos: windows, goarch: amd64, output: amd64 }
+          - { goos: windows, goarch: arm64, output: arm64 }
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-go@v7
         with:
@@ -57,12 +100,11 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          GO386: ${{ matrix.go386 }}
           GOAMD64: ${{ matrix.goamd64 }}
           GOARM: ${{ matrix.goarm }}
           GOMIPS: ${{ matrix.gomips }}
           TARGET_NAME: ${{ matrix.output }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
           # Android only: clang prefix from the matrix and the NDK root
           # installed above. Unused for non-Android targets.
           NDK_ABI: ${{ matrix.ndk }}
@@ -92,15 +134,20 @@ jobs:
             CGO_ENABLED=0 go build -trimpath -ldflags="$ldflags" -o "$binary" ./cmd/ysunethelper
           fi
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ysunethelper-${{ matrix.goos }}-${{ matrix.output }}
-          path: dist/*
-          if-no-files-found: error
+      - name: Upload binary directly to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # --clobber lets failed matrix jobs be rerun for the same tag.
+          gh release upload "$RELEASE_TAG" dist/* \
+            --clobber
 
   package:
     needs: build
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -111,15 +158,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
         with:
-          name: ysunethelper-linux-${{ matrix.output }}
-          path: dist
-          merge-multiple: true
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
       - name: Set package version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+        run: echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Download Linux binary from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" \
+            --pattern "ysunethelper_${VERSION}_linux_${OUTPUT}" \
+            --dir dist
 
       - name: Build deb/rpm/pacman packages
         env:
@@ -131,7 +186,7 @@ jobs:
           set -euo pipefail
           base="ysunethelper_${VERSION}_linux_${OUTPUT}"
           binary="dist/${base}"
-          # upload/download artifacts may not preserve the executable bit;
+          # Release asset downloads don't preserve the executable bit;
           # install below restores it in the package payload.
           test -f "$binary"
           root="${RUNNER_TEMP}/package-root"
@@ -220,56 +275,51 @@ jobs:
             esac
           fi
 
-      - name: Upload packages
-        uses: actions/upload-artifact@v7
-        with:
-          name: ysunethelper-linux-packages-${{ matrix.output }}
-          path: |
-            dist/*.deb
-            dist/*.rpm
-            dist/*.pkg.tar.zst
-          if-no-files-found: error
+      - name: Upload packages directly to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OUTPUT: ${{ matrix.output }}
+        run: |
+          set -euo pipefail
+          base="ysunethelper_${VERSION}_linux_${OUTPUT}"
+          gh release upload "$RELEASE_TAG" \
+            "dist/${base}.deb" \
+            "dist/${base}.rpm" \
+            "dist/${base}.pkg.tar.zst" \
+            --clobber
 
   release:
     needs: [build, package]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Download all architecture artifacts
-        uses: actions/download-artifact@v8
         with:
-          pattern: ysunethelper-*
-          path: artifacts
-          merge-multiple: true
-
-      - name: Select release notes
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          notes_file="release-notes/${VERSION}.md"
-          test -f "$notes_file"
-          cp "$notes_file" "${RUNNER_TEMP}/release-notes.md"
-
-      - name: Publish GitHub Release
-        working-directory: artifacts
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - name: Generate Release checksums
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          mapfile -t release_files < <(find . -maxdepth 1 -type f -printf '%f\n' | sort)
-          ((${#release_files[@]} > 0))
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # A force-updated tag may already have a release. Replace its assets
-            # so rerunning this workflow publishes the newly built files.
-            gh release upload "$GITHUB_REF_NAME" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber \
-              "${release_files[@]}"
-          else
-            gh release create "$GITHUB_REF_NAME" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
-              --notes-file "$RUNNER_TEMP/release-notes.md" \
-              "${release_files[@]}"
-          fi
+          version="${RELEASE_TAG#v}"
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" --dir dist --pattern "ysunethelper_${version}_*"
+          (
+            cd dist
+            sha256sum ysunethelper_* > SHA256SUMS
+          )
+          gh release upload "$RELEASE_TAG" dist/SHA256SUMS --clobber
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # This job runs only after every binary and package upload succeeds.
+          # A failed new release stays a draft, with its successful uploads intact.
+          # Leave the title and release notes managed through GitHub Releases intact.
+          gh release edit "$RELEASE_TAG" --draft=false
