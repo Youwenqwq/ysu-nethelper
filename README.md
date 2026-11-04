@@ -6,6 +6,7 @@
 
 - 查询校园网认证状态
 - 登录、登出校园网，支持校园网及运营商网络服务
+- 复用当前在线会话免密码切换运营商，提供终端交互菜单
 - 以守护进程方式自动检测掉线并重新认证
 
 ## 安装
@@ -28,6 +29,8 @@ deploy/ 下也放置了一个 initd 模板，可按需手动配置使用。
 ysunethelper [-config path] status [-v] [-test] [--json]
 ysunethelper [-config path] login [-u username] [-p password] [-s service] [--json]
 ysunethelper [-config path] logout [--json]
+ysunethelper [-config path] switch [--json] <service>
+ysunethelper [-config path] tui
 ysunethelper [-config path] devices [--json]
 ysunethelper [-config path] kick [--json] <序号|UUID>...
 ysunethelper [-config path] daemon
@@ -35,7 +38,7 @@ ysunethelper version
 ysunethelper -h
 ```
 
-全局选项 `-config` 和 `-v` 必须放在命令之前。`status`、`login`、`logout`、`devices`、`kick` 的命令选项放在命令之后；运行 `ysunethelper <命令> -h` 可查看对应帮助。
+全局选项 `-config` 和 `-v` 必须放在命令之前。命令选项放在命令之后、位置参数之前；运行 `ysunethelper <命令> -h` 可查看对应帮助。
 
 ### 查询状态
 
@@ -97,15 +100,46 @@ ysunethelper login -u 202400114514 -p 'your-password' -s campus
 ysunethelper logout
 ```
 
+### 免密码切换运营商
+
+设备已经在线时，使用 `tui` 打开终端菜单，输入编号、中文名称或英文别名切换，`r` 刷新，`q` 退出：
+
+```sh
+ysunethelper tui
+```
+
+菜单从服务器读取当前会话的完整服务列表，并标记当前运营商。门户可能返回尚未绑定的运营商，账号是否已绑定目标运营商由服务器校验。也可以直接切换：
+
+```sh
+ysunethelper switch 3
+ysunethelper switch 联通
+ysunethelper switch unicom
+ysunethelper switch campus
+ysunethelper switch --json unicom
+```
+
+`switch` 必须提供目标，不带参数只显示用法，不进入交互界面。只有 `tui` 命令打开菜单。支持中文简称、服务全名和英文别名；编号固定，不受门户列表顺序变化影响：
+
+| 编号 | 服务名称 | 英文别名 |
+|---|---|---|
+| `0` | 校园网 | `campus` |
+| `1` | 中国电信（电信） | `telecom` |
+| `2` | 中国移动（移动） | `mobile` |
+| `3` | 中国联通（联通） | `unicom` |
+
+此功能使用认证网页的 `/eportal/network/setService` 接口和当前在线会话，不需要输入密码，也不依赖本地 CAS 凭据。服务端接受切换后，程序会在最多 20 秒内轮询实际在线状态，等待目标运营商生效；短暂离线、仍显示旧运营商或网络暂时中断时继续等待，不重复提交切换请求。已在目标运营商时不重复切换。开始切换前设备已离线时会提示先 `login`，不会自动询问密码。
+
+切换可能短暂断网；服务端若已下线原连接却未能登录目标服务，会明确报告失败。`switch` 不修改配置，运行中的 daemon 以后重连仍使用其启动时配置的 `service`。需要长期保持新运营商时，应同步修改配置并重启 daemon。`login -s` 的行为保持不变：已经在线时不会切换。
+
 ### 在线设备管理
 
-通过自助服务查询账号当前在线设备（当前设备有标注，无需本机在线）：
+使用当前在线会话免密码查询账号设备，当前设备有标注：
 
 ```sh
 ysunethelper devices
 ```
 
-传入 `--json` 输出接口原始数据，供脚本解析：
+传入 `--json` 输出结构化在线列表（`online`）及接口原始数据（`raw`），供脚本解析：
 
 ```sh
 ysunethelper devices --json
@@ -118,7 +152,11 @@ ysunethelper kick 2
 ysunethelper kick 44484b32a082306001a0a8b4470c6b39
 ```
 
-`logout` 和 `kick` 同样支持 `--json`：`logout --json` 输出 `{"ok": true}`；`kick --json` 输出 `ok` 和被下线设备的结构化列表（`kicked` 数组）。
+`devices` 和 `kick` 均要求本机已在线；不读取账号密码或 CAS 凭据，也不再回退到自助服务登录。离线或会话失效时直接报错。设备来自当前在线账号；下线前会校验所有目标，任何无效目标都会阻止整次提交，重复目标只提交一次。
+
+下线可能有延迟，成功输出表示服务器已接受请求，可用 `devices` 复查。设备序号从 1 开始，与上面的运营商编号不同。
+
+`logout` 和 `kick` 同样支持 `--json`：`logout --json` 输出 `{"ok": true}`；`kick --json` 输出 `ok` 和已提交下线请求的设备结构化列表（`kicked` 数组）。
 
 命令行密码可能被本机其他用户通过进程列表看到，长期使用建议写入权限为 0600 的配置文件。
 
@@ -127,7 +165,7 @@ ysunethelper kick 44484b32a082306001a0a8b4470c6b39
 ### 配置文件路径
 
 - `daemon`：`-config` 显式指定 → `./ysunethelper.json` → `~/.config/ysunethelper/config.json` → `/etc/ysunethelper/config.json`
-- `status`、`login`、`logout`、`devices`、`kick`：与上述一致，但不检查 `/etc` 下的配置，避免权限问题。
+- `status`、`login`、`logout`、`switch`、`tui`、`devices`、`kick`：与上述一致，但不检查 `/etc` 下的配置，避免权限问题。
 
 显式指定时，把 `-config` 放在子命令之前：
 
@@ -200,6 +238,10 @@ go test ./...
 ```
 
 发布构建通过 `-ldflags "-X main.version=vX.Y.Z"` 注入版本号（见 release workflow）；本地构建的 `ysunethelper version` 显示 `dev`（仓库构建时附带提交号）。
+
+发布 `v*` tag 时，Release workflow 会先创建草稿 Release，各架构编译后直接上传二进制到 Release；Linux 打包任务从同一 Release 下载对应二进制，完成 deb/rpm/pacman 打包与配置文件校验后直接上传安装包。全部架构和安装包成功后，从 Release 下载资源生成并上传 `SHA256SUMS`，最后发布新 Release，全程不使用 Actions artifact 中转。也可在 Actions 中手动运行 Release workflow，填写已有 tag，构建与发布都会使用该 tag 的代码。Release 说明由你直接在 GitHub Releases 页面填写，不再要求仓库提供对应 tag 的 Markdown 文件；新建草稿时说明留空，发布和重跑均不会覆盖已有标题或说明。
+
+同一 tag 的发布任务串行执行；失败时新 Release 保持草稿，已上传的文件保留，重跑会覆盖同名资源。重跑已经发布的版本时复用该 Release，不会将其撤回为草稿。此修改只影响后续工作流，不会删除以前已产生的 Actions artifact。
 
 ## 项目结构
 

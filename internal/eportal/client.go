@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -56,7 +57,13 @@ func ResolveService(s string) string {
 
 // Client 是 ePortal 门户客户端。
 type Client struct {
-	hc *httpkit.Client
+	hc portalHTTP
+}
+
+type portalHTTP interface {
+	Get(context.Context, string) (*http.Response, error)
+	PostJSON(context.Context, string, io.Reader) (*http.Response, error)
+	Follow(context.Context, string, int) (*httpkit.FollowResult, error)
 }
 
 // New 构造客户端；timeout 作用于每次 HTTP 请求。
@@ -376,11 +383,20 @@ type envelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
+	Success *bool           `json:"success,omitempty"`
 }
 
-func (e envelope) ok() bool { return e.Code == http.StatusOK }
+func (e envelope) ok() bool { return e.Code == http.StatusOK && (e.Success == nil || *e.Success) }
 
 func (c *Client) unwrap(resp *http.Response, reqURL string) (json.RawMessage, error) {
+	env, err := c.readEnvelope(resp, reqURL)
+	if err != nil {
+		return nil, err
+	}
+	return env.Data, nil
+}
+
+func (c *Client) readEnvelope(resp *http.Response, reqURL string) (*envelope, error) {
 	text, err := httpkit.ReadString(resp)
 	if err != nil {
 		return nil, &httpkit.NetworkError{URL: reqURL, Err: err}
@@ -396,7 +412,7 @@ func (c *Client) unwrap(resp *http.Response, reqURL string) (json.RawMessage, er
 	if !env.ok() {
 		return nil, fmt.Errorf("%w: code=%d message=%s url=%s", ErrBusiness, env.Code, env.Message, reqURL)
 	}
-	return env.Data, nil
+	return &env, nil
 }
 
 func (c *Client) getJSON(ctx context.Context, rawURL string) (json.RawMessage, error) {
